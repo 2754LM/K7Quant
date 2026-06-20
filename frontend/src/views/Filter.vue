@@ -3,6 +3,8 @@ import { ref, computed, inject } from 'vue'
 import { filterSymbols, getStrategies } from '../api'
 
 import StateView from '../components/StateView.vue'
+import DateRangePicker from '../components/DateRangePicker.vue'
+import TimeframePicker from '../components/TimeframePicker.vue'
 
 const cfg = inject('cfg')
 
@@ -21,6 +23,7 @@ const error = ref('')
 const count = ref(0)
 
 const strategies = computed(() => cfg.value?.strategies || [])
+const timeframes = computed(() => cfg.value?.timeframes || ['1d'])
 
 const presets = [
   { name: '🚀 牛市赢家', patch: { min_return: 0.5, min_sharpe: 0.5 } },
@@ -82,12 +85,7 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
         </div>
         <div class="form-row">
           <label>K线</label>
-          <select v-model="params.timeframe">
-            <option value="1h">1h</option>
-            <option value="4h">4h</option>
-            <option value="1d">1d</option>
-            <option value="1w">1w</option>
-          </select>
+          <TimeframePicker :timeframes="timeframes" v-model="params.timeframe" />
         </div>
         <div class="form-row">
           <label>区间最低涨幅</label>
@@ -112,13 +110,9 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
           <input type="number" v-model.number="params.min_sharpe" step="0.1" />
           <span class="hint">&gt;1 优秀, &gt;0 正期望</span>
         </div>
-        <div class="form-row">
-          <label>开始</label>
-          <input type="text" v-model="params.start_date" />
-        </div>
-        <div class="form-row">
-          <label>结束</label>
-          <input type="text" v-model="params.end_date" />
+        <div class="form-row" style="grid-column: span 3">
+          <label>日期区间</label>
+          <DateRangePicker v-model:start="params.start_date" v-model:end="params.end_date" default-range="3m" />
         </div>
       </div>
       <button class="btn-primary" @click="run" :disabled="loading">

@@ -1,9 +1,10 @@
 <script setup>
-import { ref, computed, watch, nextTick, inject } from 'vue'
+import { ref, computed, watch, nextTick, inject, onUnmounted } from 'vue'
 import { getKline } from '../api'
 import * as echarts from 'echarts'
 
 import TimeframePicker from '../components/TimeframePicker.vue'
+import DateRangePicker from '../components/DateRangePicker.vue'
 import StateView from '../components/StateView.vue'
 import HelpTip from '../components/HelpTip.vue'
 
@@ -17,7 +18,12 @@ const data = ref(null)
 const loading = ref(false)
 const error = ref('')
 const tableView = ref('chart')
-const visibleMA = ref({ ma7: true, ma25: true, ma99: false })
+const visibleIndicators = ref({
+  ma7: true, ma25: true, ma99: false,
+  ma5: false, ma10: false, ma20: false, ma60: false,
+  boll: false, ema: false,
+  volume: true,
+})
 let chart = null
 
 const symbolInfo = computed(() => {
@@ -36,9 +42,11 @@ const tableRows = computed(() => {
 })
 
 watch([symbol, timeframe], () => load(), { immediate: true })
-watch(visibleMA, () => drawChart(), { deep: true })
+watch(visibleIndicators, () => drawChart(), { deep: true })
+watch([startDate, endDate], () => load())
 
 async function load() {
+  if (!startDate.value || !endDate.value) return
   loading.value = true
   error.value = ''
   try {
@@ -58,41 +66,185 @@ async function load() {
   }
 }
 
+function computeMA(closes, n) {
+  if (closes.length < n) return new Array(closes.length).fill(null)
+  const out = []
+  let sum = 0
+  for (let i = 0; i < closes.length; i++) {
+    sum += closes[i]
+    if (i >= n) sum -= closes[i - n]
+    out.push(i >= n - 1 ? sum / n : null)
+  }
+  return out
+}
+
+function computeEMA(closes, n) {
+  if (closes.length === 0) return []
+  const k = 2 / (n + 1)
+  const out = new Array(closes.length).fill(null)
+  let ema = closes[0]
+  out[0] = ema
+  for (let i = 1; i < closes.length; i++) {
+    ema = closes[i] * k + ema * (1 - k)
+    out[i] = ema
+  }
+  return out
+}
+
+function computeBOLL(closes, n = 20, k = 2) {
+  const out = { upper: [], mid: [], lower: [] }
+  if (closes.length < n) return out
+  for (let i = 0; i < closes.length; i++) {
+    if (i < n - 1) {
+      out.upper.push(null); out.mid.push(null); out.lower.push(null)
+      continue
+    }
+    const slice = closes.slice(i - n + 1, i + 1)
+    const mean = slice.reduce((a, b) => a + b, 0) / n
+    const variance = slice.reduce((a, b) => a + (b - mean) ** 2, 0) / n
+    const sd = Math.sqrt(variance)
+    out.mid.push(mean)
+    out.upper.push(mean + k * sd)
+    out.lower.push(mean - k * sd)
+  }
+  return out
+}
+
 function drawChart() {
   if (!data.value?.kline?.length) return
   const el = document.getElementById('kline-chart')
   if (!el) return
   if (!chart) chart = echarts.init(el, null, { renderer: 'canvas' })
   const dates = data.value.kline.map(k => k.date)
-  const kValues = data.value.kline.map((k, i) => [i, k.open, k.close, k.low, k.high])
+  const kline = data.value.kline
+  const closes = kline.map(k => k.close)
+  const kValues = kline.map((k, i) => [i, k.open, k.close, k.low, k.high])
+
+  // 主图区(蜡烛 + MA + BOLL) + 副图区(成交量)
+  const grid = visibleIndicators.value.volume
+    ? [
+        { left: 60, right: 30, top: 60, height: '60%' },
+        { left: 60, right: 30, top: '76%', height: '16%' },
+      ]
+    : [{ left: 60, right: 30, top: 60, height: '78%' }]
+
+  const xAxis = visibleIndicators.value.volume
+    ? [
+        { type: 'category', data: dates, gridIndex: 0, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' } },
+        { type: 'category', data: dates, gridIndex: 1, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { show: false } },
+      ]
+    : [{ type: 'category', data: dates, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' } }]
+
   const series = [{
     name: 'K线', type: 'candlestick', data: kValues,
-    itemStyle: { color: '#02c076', color0: '#f6465d', borderColor: '#02c076', borderColor0: '#f6465d' }
+    xAxisIndex: 0, yAxisIndex: 0,
+    itemStyle: {
+      color: '#02c076', color0: '#f6465d',
+      borderColor: '#02c076', borderColor0: '#f6465d'
+    }
   }]
-  for (const k of ['ma7', 'ma25', 'ma99']) {
-    if (!visibleMA.value[k]) continue
+
+  // 多条 MA
+  const MA_COLORS = {
+    ma5: '#9b59b6', ma7: '#3498db', ma10: '#e67e22', ma20: '#f1c40f',
+    ma25: '#f0b90b', ma60: '#e74c3c', ma99: '#1abc9c',
+  }
+  for (const k of ['ma5', 'ma7', 'ma10', 'ma20', 'ma25', 'ma60', 'ma99']) {
+    if (!visibleIndicators.value[k]) continue
+    const ma = computeMA(closes, parseInt(k.slice(2)))
     series.push({
-      name: k.toUpperCase(), type: 'line',
-      data: data.value.kline.map((row, i) => row[k] ? [i, row[k]] : null),
-      smooth: true, showSymbol: false, lineStyle: { width: 1.2 }
+      name: k.toUpperCase(), type: 'line', data: ma, smooth: true, showSymbol: false,
+      xAxisIndex: 0, yAxisIndex: 0,
+      lineStyle: { width: 1.2, color: MA_COLORS[k] }
     })
   }
+  // EMA20
+  if (visibleIndicators.value.ema) {
+    const ema = computeEMA(closes, 20)
+    series.push({
+      name: 'EMA20', type: 'line', data: ema, smooth: true, showSymbol: false,
+      xAxisIndex: 0, yAxisIndex: 0,
+      lineStyle: { width: 1.2, color: '#16a085', type: 'dashed' }
+    })
+  }
+  // BOLL
+  if (visibleIndicators.value.boll) {
+    const b = computeBOLL(closes, 20, 2)
+    series.push({ name: 'BOLL上轨', type: 'line', data: b.upper, smooth: true, showSymbol: false,
+      xAxisIndex: 0, yAxisIndex: 0,
+      lineStyle: { width: 0.8, color: '#8e44ad', opacity: 0.6 } })
+    series.push({ name: 'BOLL中轨', type: 'line', data: b.mid, smooth: true, showSymbol: false,
+      xAxisIndex: 0, yAxisIndex: 0,
+      lineStyle: { width: 0.8, color: '#8e44ad', opacity: 0.6 } })
+    series.push({ name: 'BOLL下轨', type: 'line', data: b.lower, smooth: true, showSymbol: false,
+      xAxisIndex: 0, yAxisIndex: 0,
+      lineStyle: { width: 0.8, color: '#8e44ad', opacity: 0.6 } })
+  }
+  // 成交量副图
+  if (visibleIndicators.value.volume) {
+    series.push({
+      name: '成交量', type: 'bar', data: kline.map((k, i) => ({
+        value: i,
+        itemStyle: { color: k.close >= k.open ? 'rgba(2,192,118,0.6)' : 'rgba(246,70,93,0.6)' }
+      })),
+      xAxisIndex: 1, yAxisIndex: 1,
+    })
+    // 修正: 成交量要用真实值
+    series[series.length - 1].data = kline.map((k, i) => k.volume || 0)
+  }
+
+  const yAxis = visibleIndicators.value.volume
+    ? [
+        { scale: true, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' }, splitLine: { lineStyle: { color: '#2b3139' } } },
+        { scale: true, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6', fontSize: 10 }, splitLine: { show: false } },
+      ]
+    : [{ scale: true, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' }, splitLine: { lineStyle: { color: '#2b3139' } } }]
+
+  const dataZoom = visibleIndicators.value.volume
+    ? [
+        { type: 'inside', xAxisIndex: [0, 1] },
+        { type: 'slider', xAxisIndex: [0, 1], height: 20, bottom: 10, backgroundColor: '#181a20' },
+      ]
+    : [
+        { type: 'inside', xAxisIndex: 0 },
+        { type: 'slider', xAxisIndex: 0, height: 20, bottom: 10, backgroundColor: '#181a20' },
+      ]
+
   chart.setOption({
     backgroundColor: 'transparent',
     title: { text: `${symbol.value} · ${curInfo.value.name_zh || ''} (${timeframe.value})`,
-      left: 'center', textStyle: { color: '#eaecef', fontSize: 14 } },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' },
-      backgroundColor: '#181a20', borderColor: '#474d57', textStyle: { color: '#eaecef' } },
-    legend: { data: ['K线', 'MA7', 'MA25', 'MA99'], top: 30, textStyle: { color: '#b7bdc6' } },
-    grid: { left: 60, right: 30, top: 80, bottom: 60 },
-    xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' } },
-    yAxis: { scale: true, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' }, splitLine: { lineStyle: { color: '#2b3139' } } },
-    dataZoom: [{ type: 'inside', xAxisIndex: 0 }, { type: 'slider', xAxisIndex: 0, height: 20, bottom: 10, backgroundColor: '#181a20' }],
-    series
+      left: 'center', top: 10, textStyle: { color: '#eaecef', fontSize: 14 } },
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'cross', link: visibleIndicators.value.volume ? { xAxisIndex: 'all' } : undefined },
+      backgroundColor: '#181a20', borderColor: '#474d57', textStyle: { color: '#eaecef' },
+      formatter: (params) => {
+        if (!params || !params.length) return ''
+        const candle = params.find(p => p.seriesType === 'candlestick')
+        if (!candle) return params.map(p => `${p.marker} ${p.seriesName}: ${p.value}`).join('<br/>')
+        const o = candle.data[1], c = candle.data[2], h = candle.data[4], l = candle.data[3]
+        const chg = c - o
+        const chgPct = (chg / o * 100).toFixed(2)
+        const color = chg >= 0 ? '#02c076' : '#f6465d'
+        let html = `<b>${candle.axisValueLabel}</b><br/>`
+        html += `开盘 <b>${o.toFixed(2)}</b>　<span style="color:${color}">${chgPct}%</span><br/>`
+        html += `收盘 <b>${c.toFixed(2)}</b><br/>`
+        html += `最高 <b style="color:#02c076">${h.toFixed(2)}</b>　最低 <b style="color:#f6465d">${l.toFixed(2)}</b><br/>`
+        for (const p of params) {
+          if (p.seriesType === 'candlestick') continue
+          if (p.value == null) continue
+          html += `${p.marker} ${p.seriesName}: <b>${typeof p.value === 'number' ? p.value.toFixed(2) : p.value}</b><br/>`
+        }
+        return html
+      }
+    },
+    legend: { data: series.map(s => s.name), top: 36, textStyle: { color: '#b7bdc6' } },
+    grid, xAxis, yAxis, series, dataZoom,
   })
 }
 
-window.addEventListener('resize', () => chart?.resize())
+function onResize() { chart?.resize() }
+window.addEventListener('resize', onResize)
+onUnmounted(() => window.removeEventListener('resize', onResize))
 
 function fmt(v, d = 2) { return v === null || v === undefined ? '-' : Number(v).toFixed(d) }
 function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFixed(2) + '%' }
@@ -125,9 +277,7 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
           </option>
         </select>
         <TimeframePicker :timeframes="timeframes" v-model="timeframe" />
-        <input type="text" v-model="startDate" placeholder="开始" />
-        <span>→</span>
-        <input type="text" v-model="endDate" placeholder="结束" />
+        <DateRangePicker v-model:start="startDate" v-model:end="endDate" default-range="3m" />
       </div>
       <div class="toolbar-right">
         <button :class="{ active: tableView === 'chart' }" @click="tableView = 'chart'">K线图</button>
@@ -148,10 +298,20 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
     </div>
 
     <div v-if="tableView === 'chart'" class="chart-area">
-      <div class="ma-toggles">
-        <label><input type="checkbox" v-model="visibleMA.ma7" /> MA7</label>
-        <label><input type="checkbox" v-model="visibleMA.ma25" /> MA25</label>
-        <label><input type="checkbox" v-model="visibleMA.ma99" /> MA99</label>
+      <div class="indicator-toggles">
+        <span class="lbl">均线</span>
+        <label><input type="checkbox" v-model="visibleIndicators.ma5" /> MA5</label>
+        <label><input type="checkbox" v-model="visibleIndicators.ma7" /> MA7</label>
+        <label><input type="checkbox" v-model="visibleIndicators.ma10" /> MA10</label>
+        <label><input type="checkbox" v-model="visibleIndicators.ma20" /> MA20</label>
+        <label><input type="checkbox" v-model="visibleIndicators.ma25" /> MA25</label>
+        <label><input type="checkbox" v-model="visibleIndicators.ma60" /> MA60</label>
+        <label><input type="checkbox" v-model="visibleIndicators.ma99" /> MA99</label>
+        <label><input type="checkbox" v-model="visibleIndicators.ema" /> EMA20</label>
+        <span class="sep">|</span>
+        <label><input type="checkbox" v-model="visibleIndicators.boll" /> BOLL</label>
+        <span class="sep">|</span>
+        <label><input type="checkbox" v-model="visibleIndicators.volume" /> 成交量</label>
       </div>
       <div id="kline-chart"></div>
     </div>
@@ -279,14 +439,35 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
   border-bottom: 1px solid var(--border);
   margin-bottom: 8px;
 }
-.ma-toggles label {
+.indicator-toggles {
   display: flex;
+  gap: 12px;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.indicator-toggles .lbl {
+  color: var(--text-secondary);
+  font-weight: 600;
+  margin-right: 4px;
+}
+.indicator-toggles .sep {
+  color: var(--border);
+  margin: 0 2px;
+}
+.indicator-toggles label {
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 13px;
   color: var(--text-secondary);
   cursor: pointer;
+  user-select: none;
 }
+.indicator-toggles label:hover { color: var(--text); }
+.indicator-toggles input[type="checkbox"] { accent-color: var(--yellow); }
 #kline-chart { height: 500px; }
 .table-area {
   max-height: 600px;

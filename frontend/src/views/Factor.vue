@@ -1,10 +1,15 @@
 <script setup>
 import { ref, computed, watch, nextTick, inject } from 'vue'
-import { computeFactor, computeFactors, correlateFactors, rankFactors, listFactors } from '../api'
+import { computeFactor, computeFactors, correlateFactors, rankFactors, listFactors,
+  listRules, createRule, deleteRule } from '../api'
 import * as echarts from 'echarts'
+
+const cfg = inject('cfg')
 
 import StateView from '../components/StateView.vue'
 import HelpTip from '../components/HelpTip.vue'
+import DateRangePicker from '../components/DateRangePicker.vue'
+import TimeframePicker from '../components/TimeframePicker.vue'
 
 const factorList = ref({ categories: [], factors: [] })
 const selectedFactor = ref(null)
@@ -31,6 +36,38 @@ watch(corrFactorsStr, (v) => {
   corrFactors.value = v.split(/[,\s]+/).filter(Boolean)
 })
 
+// ---- 自定义规则 (落库 custom_rules) ----
+const savedRules = ref([])
+async function loadRules() {
+  try { savedRules.value = (await listRules()).data.rules } catch (e) { /* ignore */ }
+}
+async function saveCurrentAsRule() {
+  if (corrFactors.value.length < 2) return
+  const name = prompt('规则名称', `相关性: ${corrFactors.value.join('+')}`)
+  if (!name) return
+  await createRule({
+    name,
+    description: `${symbol.value} ${timeframe.value} 因子相关性查询`,
+    rule_json: {
+      type: 'correlation', symbol: symbol.value, timeframe: timeframe.value,
+      factor_ids: corrFactors.value, period: corrPeriod.value,
+    },
+  })
+  await loadRules()
+}
+function applyRule(r) {
+  const j = r.rule_json || {}
+  if (j.factor_ids) corrFactorsStr.value = j.factor_ids.join(',')
+  if (j.symbol) symbol.value = j.symbol
+  if (j.timeframe) timeframe.value = j.timeframe
+  if (j.period) corrPeriod.value = j.period
+  tab.value = 'cross'
+}
+async function delRule(id) {
+  await deleteRule(id)
+  await loadRules()
+}
+
 const allSymbols = computed(() => {
   const arr = []
   for (const s of (factorList.value.factors || [])) {
@@ -38,6 +75,8 @@ const allSymbols = computed(() => {
   }
   return arr.slice(0, 25)
 })
+
+const timeframes = computed(() => cfg.value?.timeframes || ['1d'])
 
 async function loadFactorList() {
   const res = await listFactors()
@@ -210,6 +249,7 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
 function pctRank(v) { return v === null || v === undefined ? '-' : (v * 100).toFixed(1) + '%' }
 
 loadFactorList()
+loadRules()
 </script>
 
 <template>
@@ -239,15 +279,11 @@ loadFactorList()
         </div>
         <div class="form-group">
           <label>K线</label>
-          <input type="text" v-model="timeframe" />
+          <TimeframePicker :timeframes="timeframes" v-model="timeframe" />
         </div>
-        <div class="form-group">
-          <label>开始</label>
-          <input type="text" v-model="start" />
-        </div>
-        <div class="form-group">
-          <label>结束</label>
-          <input type="text" v-model="end" />
+        <div class="form-group" style="grid-column: span 2; min-width: 360px">
+          <label>日期区间</label>
+          <DateRangePicker v-model:start="start" v-model:end="end" default-range="3m" />
         </div>
         <div v-for="(schema, key) in (selectedFactor?.params_schema || {})" :key="key" class="form-group">
           <label>{{ schema.label || key }}</label>
@@ -298,6 +334,14 @@ loadFactorList()
           {{ f }}
           <button @click="corrFactors = corrFactors.filter(x => x !== f)">×</button>
         </span>
+      </div>
+      <div class="rules-bar">
+        <button class="btn-secondary" @click="saveCurrentAsRule" :disabled="corrFactors.length < 2">💾 保存为规则</button>
+        <span v-for="r in savedRules" :key="r.id" class="rule-chip" :title="r.description">
+          <span class="rule-name" @click="applyRule(r)">{{ r.name }}</span>
+          <button @click="delRule(r.id)">×</button>
+        </span>
+        <span v-if="!savedRules.length" class="rules-empty">暂无保存的规则</span>
       </div>
       <div v-if="corrResult" id="corr-chart" class="chart-large"></div>
     </div>
@@ -403,4 +447,14 @@ loadFactorList()
   gap: 6px;
 }
 .chip button { background: transparent; color: var(--yellow); padding: 0 2px; font-size: 14px; }
+.rules-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.rules-empty { font-size: 12px; color: var(--text-muted); }
+.rule-chip {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 14px; padding: 3px 6px 3px 10px; font-size: 12px;
+}
+.rule-chip .rule-name { cursor: pointer; color: var(--text); }
+.rule-chip .rule-name:hover { color: var(--yellow); }
+.rule-chip button { background: transparent; color: var(--red); padding: 0 2px; font-size: 13px; }
 </style>

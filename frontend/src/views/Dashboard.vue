@@ -6,6 +6,7 @@ import * as echarts from 'echarts'
 import MetricCard from '../components/MetricCard.vue'
 import StrategyPicker from '../components/StrategyPicker.vue'
 import TimeframePicker from '../components/TimeframePicker.vue'
+import DateRangePicker from '../components/DateRangePicker.vue'
 import StateView from '../components/StateView.vue'
 import HelpTip from '../components/HelpTip.vue'
 
@@ -13,6 +14,9 @@ const cfg = inject('cfg')
 const reloadCfg = inject('reload')
 
 const mode = ref('preset') // 'preset' | 'code'
+const tfMode = ref('single') // 'single' | 'multi'
+const multiTfs = ref(['4h', '1d', '1w'])
+const multiResults = ref(null)  // 多周期回测结果
 
 // ---------- 预设策略模式 ----------
 const params = ref({
@@ -174,6 +178,30 @@ const HELP = {
 onMounted(() => run())
 
 async function run() {
+  if (tfMode.value === 'multi') {
+    if (multiTfs.value.length === 0) {
+      error.value = '请至少选择一个周期'
+      return
+    }
+    loading.value = true
+    error.value = ''
+    multiResults.value = null
+    try {
+      const results = await Promise.all(multiTfs.value.map(tf =>
+        scanPool({ ...params.value, timeframe: tf })
+          .then(r => ({ tf, ok: true, data: r.data }))
+          .catch(e => ({ tf, ok: false, error: e.message }))
+      ))
+      multiResults.value = results
+      await nextTick()
+      drawMultiChart()
+    } catch (e) {
+      error.value = e.message
+    } finally {
+      loading.value = false
+    }
+    return
+  }
   loading.value = true
   error.value = ''
   try {
@@ -226,6 +254,39 @@ function drawChart() {
 function onResize() { chart?.resize(); codeChart?.resize() }
 window.addEventListener('resize', onResize)
 onUnmounted(() => window.removeEventListener('resize', onResize))
+
+const MULTI_COLORS = ['#f0b90b', '#3498db', '#e74c3c', '#9b59b6', '#1abc9c', '#e67e22', '#16a085', '#f368e0']
+
+function drawMultiChart() {
+  if (!multiResults.value?.length) return
+  const el = document.getElementById('equity-chart')
+  if (!el) return
+  if (!chart) chart = echarts.init(el, null, { renderer: 'canvas' })
+  const series = multiResults.value.map((r, i) => {
+    if (!r.ok || !r.data?.combined_equity?.length) return null
+    const e0 = r.data.combined_equity[0].equity
+    const data = r.data.combined_equity.map(rr => [rr.date, rr.equity / e0])
+    return {
+      name: r.tf, type: 'line', data, smooth: true, showSymbol: false,
+      lineStyle: { width: 2, color: MULTI_COLORS[i % MULTI_COLORS.length] }
+    }
+  }).filter(Boolean)
+  chart.setOption({
+    backgroundColor: 'transparent',
+    title: { text: `多周期对比: ${activeStrategy.value?.name || ''}`, left: 'center',
+      textStyle: { color: '#eaecef', fontSize: 14 } },
+    tooltip: { trigger: 'axis', backgroundColor: '#181a20', borderColor: '#2b3139',
+      textStyle: { color: '#eaecef' }, valueFormatter: v => (v * 100).toFixed(2) + '%' },
+    legend: { data: series.map(s => s.name), top: 30, textStyle: { color: '#b7bdc6' } },
+    grid: { left: 60, right: 30, top: 80, bottom: 60 },
+    xAxis: { type: 'time', axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' } },
+    yAxis: { type: 'value', axisLine: { lineStyle: { color: '#474d57' } },
+      axisLabel: { color: '#b7bdc6', formatter: v => (v * 100).toFixed(0) + '%' },
+      splitLine: { lineStyle: { color: '#2b3139' } } },
+    series,
+    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 20, bottom: 10, backgroundColor: '#181a20' }]
+  })
+}
 </script>
 
 <template>
@@ -239,9 +300,23 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
     <template v-if="mode === 'preset'">
       <div class="top-bar">
         <StrategyPicker :strategies="strategies" v-model="params.strategy_id" @change="run" />
-        <TimeframePicker :timeframes="timeframes" v-model="params.timeframe" @change="run" />
+        <div class="tf-mode-toggle">
+          <button :class="{ active: tfMode === 'single' }" @click="tfMode = 'single'">单周期</button>
+          <button :class="{ active: tfMode === 'multi' }" @click="tfMode = 'multi'">多周期对比</button>
+        </div>
+        <template v-if="tfMode === 'single'">
+          <TimeframePicker :timeframes="timeframes" v-model="params.timeframe" @change="run" />
+        </template>
+        <template v-else>
+          <div class="multi-tf">
+            <label v-for="tf in timeframes" :key="tf" class="tf-chip">
+              <input type="checkbox" :value="tf" v-model="multiTfs" />
+              <span>{{ tf }}</span>
+            </label>
+          </div>
+        </template>
         <button class="btn-primary" :disabled="loading" @click="run">
-          {{ loading ? '运行中...' : '重新扫描' }}
+          {{ loading ? '运行中...' : (tfMode === 'multi' ? '▶ 跑多周期' : '重新扫描') }}
         </button>
       </div>
 
@@ -253,13 +328,9 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
             :max="schema.max"
             @change="run" />
         </div>
-        <div class="cfg">
-          <label>开始</label>
-          <input type="text" v-model="params.start_date" @change="run" />
-        </div>
-        <div class="cfg">
-          <label>结束</label>
-          <input type="text" v-model="params.end_date" @change="run" />
+        <div class="cfg date-cfg">
+          <label>区间</label>
+          <DateRangePicker v-model:start="params.start_date" v-model:end="params.end_date" default-range="3m" />
         </div>
         <div v-if="activeStrategy?.description" class="desc-box">
           <span>💡</span>
@@ -278,12 +349,46 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
         <MetricCard label="信息比率" :value="metrics.information_ratio" fmt="num" :help="HELP.information_ratio" />
       </div>
 
-      <div v-if="!result && !loading && !error" class="empty-state">
+      <div v-if="!result && !multiResults && !loading && !error" class="empty-state">
         <div class="icon">📈</div>
         <div>选择策略 + K线周期, 自动扫描全池</div>
       </div>
 
-      <div v-if="result" id="equity-chart" class="chart"></div>
+      <div v-if="result || multiResults" id="equity-chart" class="chart"></div>
+
+      <!-- 多周期结果表 -->
+      <div v-if="multiResults" class="multi-results card">
+        <h3>多周期对比结果</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>周期</th>
+              <th>状态</th>
+              <th>总收益</th>
+              <th>年化</th>
+              <th>夏普</th>
+              <th>最大回撤</th>
+              <th>胜率</th>
+              <th>币种数</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in multiResults" :key="r.tf">
+              <td class="tf-name">{{ r.tf }}</td>
+              <td v-if="!r.ok" class="neg">✗ {{ r.error }}</td>
+              <template v-else>
+                <td class="pos">✓</td>
+                <td :class="(r.data.combined_metrics?.total_return ?? 0) >= 0 ? 'pos' : 'neg'">{{ fmtPct(r.data.combined_metrics?.total_return) }}</td>
+                <td>{{ fmtPct(r.data.combined_metrics?.annual_return) }}</td>
+                <td :class="(r.data.combined_metrics?.sharpe ?? 0) >= 1 ? 'pos' : (r.data.combined_metrics?.sharpe ?? 0) < 0 ? 'neg' : ''">{{ fmtNum(r.data.combined_metrics?.sharpe) }}</td>
+                <td class="neg">{{ fmtPct(r.data.combined_metrics?.max_drawdown) }}</td>
+                <td>{{ fmtPct(r.data.combined_metrics?.win_rate) }}</td>
+                <td>{{ r.data.count }}</td>
+              </template>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       <div v-if="result" class="ranking-section">
         <div class="ranking-header">
@@ -342,12 +447,8 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
               <TimeframePicker :timeframes="timeframes" v-model="codeForm.timeframe" />
             </div>
             <div class="form-group">
-              <label>开始</label>
-              <input type="text" v-model="codeForm.start_date" />
-            </div>
-            <div class="form-group">
-              <label>结束</label>
-              <input type="text" v-model="codeForm.end_date" />
+              <label>区间</label>
+              <DateRangePicker v-model:start="codeForm.start_date" v-model:end="codeForm.end_date" default-range="3m" />
             </div>
             <button class="btn-primary" :disabled="codeLoading" @click="runCode">
               {{ codeLoading ? '运行中...' : '▶ 运行回测' }}
@@ -449,6 +550,52 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
   gap: 6px;
   min-width: 240px;
 }
+.tf-mode-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px 6px;
+}
+.tf-mode-toggle button {
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.tf-mode-toggle button.active {
+  background: var(--yellow);
+  color: #000;
+  font-weight: 600;
+}
+.multi-tf {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.tf-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 14px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  font-family: 'Consolas', monospace;
+}
+.tf-chip input { margin-right: 4px; accent-color: var(--yellow); }
+.tf-chip:has(input:checked) {
+  background: rgba(240,185,11,0.15);
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+.multi-results.card { padding: 16px 20px; }
+.multi-results h3 { font-size: 16px; margin-bottom: 12px; }
+.multi-results .tf-name { font-weight: 600; color: var(--yellow); font-family: 'Consolas', monospace; }
+.date-cfg { min-width: 320px; }
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
