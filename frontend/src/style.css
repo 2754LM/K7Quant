@@ -1,0 +1,31 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: #0b0e11;
+  color: #eaecef;
+  min-height: 100vh;
+}
+
+#app { min-height: 100vh; }
+
+button { cursor: pointer; border: none; outline: none; font-family: inherit; }
+input, select { font-family: inherit; outline: none; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #1e2329; }
+::-webkit-scrollbar-thumb { background: #474d57; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #707684; }
+
+/* Binance 风格色 */
+:root {
+  --binance-yellow: #f0b90b;
+  --binance-bg: #0b0e11;
+  --binance-card: #1e2329;
+  --binance-border: #2b3139;
+  --binance-text: #eaecef;
+  --binance-text-secondary: #b7bdc6;
+  --binance-green: #02c076;
+  --binance-red: #f6465d;
+  --binance-blue: #1e88e5;
+}
