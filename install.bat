@@ -16,11 +16,11 @@ if not exist venv (
     python -m venv venv
 )
 
-echo [2/3] 安装 Python 依赖...
+echo [2/3] 安装 Python 依赖 (SQLAlchemy + FastAPI + ...)...
 venv\Scripts\python.exe -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
 venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-echo [3/3] 安装前端依赖并构建...
+echo [3/3] 安装前端依赖并构建 (Naive UI + Vue3 + ECharts)...
 cd frontend
 call npm install --registry https://registry.npmmirror.com
 call npm run build
@@ -29,5 +29,7 @@ cd ..
 echo.
 echo ============================================
 echo   安装完成！双击 start.bat 启动
+echo   - 后端: http://127.0.0.1:8765
+echo   - 前端开发模式: cd frontend ^&^& npm run dev
 echo ============================================
 pause

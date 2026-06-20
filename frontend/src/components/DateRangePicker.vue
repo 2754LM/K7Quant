@@ -1,31 +1,35 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
+import { NDatePicker } from 'naive-ui'
 
 const props = defineProps({
   start: String,        // YYYYMMDD
   end: String,
   defaultRange: { type: String, default: '3m' },
+  size: { type: String, default: 'small' },
 })
 const emit = defineEmits(['update:start', 'update:end', 'change'])
 
-// YYYYMMDD <-> YYYY-MM-DD
-function toIso(s) {
-  if (!s || s.length !== 8) return ''
-  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`
-}
-function fromIso(s) {
-  if (!s || s.length !== 10) return ''
-  return s.replace(/-/g, '')
-}
+// 内部用 Naive UI 的 timestamp (ms) 表示
+const tsStart = computed({
+  get: () => toTs(props.start),
+  set: (v) => emit('update:start', fromTs(v)),
+})
+const tsEnd = computed({
+  get: () => toTs(props.end),
+  set: (v) => emit('update:end', fromTs(v)),
+})
 
-const startIso = computed({
-  get: () => toIso(props.start),
-  set: (v) => emit('update:start', fromIso(v)),
-})
-const endIso = computed({
-  get: () => toIso(props.end),
-  set: (v) => emit('update:end', fromIso(v)),
-})
+function toTs(s) {
+  if (!s || s.length !== 8) return null
+  const y = +s.slice(0, 4), m = +s.slice(4, 6) - 1, d = +s.slice(6, 8)
+  return new Date(y, m, d).getTime()
+}
+function fromTs(ts) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
+}
 
 const RANGES = [
   { id: '1w', label: '1周', days: 7 },
@@ -38,35 +42,52 @@ const RANGES = [
 ]
 
 const activeRange = ref(props.defaultRange)
-const inited = ref(false)
 
 function setRange(r) {
   activeRange.value = r.id
   const now = new Date()
-  const end = fromIso(now.toISOString().slice(0, 10))
   let start
   if (r.days) {
     const d = new Date(now)
     d.setDate(d.getDate() - r.days)
-    start = fromIso(d.toISOString().slice(0, 10))
+    start = fromTs(d.getTime())
   } else {
     start = '20170101'
   }
+  const end = fromTs(now.getTime())
   emit('update:start', start)
   emit('update:end', end)
   emit('change', { start, end })
-}
-
-function todayIso() {
-  return new Date().toISOString().slice(0, 10)
 }
 
 onMounted(() => {
   if (!props.start || !props.end) {
     setRange(RANGES.find(r => r.id === props.defaultRange) || RANGES[2])
   }
-  inited.value = true
 })
+
+watch([tsStart, tsEnd], ([s, e]) => {
+  if (s && e) {
+    emit('change', { start: fromTs(s), end: fromTs(e) })
+    // 标记自定义区间 (不属于预设)
+    const start = fromTs(s)
+    const end = fromTs(e)
+    if (!isPresetRange(start, end)) activeRange.value = ''
+  }
+})
+
+function isPresetRange(start, end) {
+  const now = new Date()
+  const e = fromTs(now.getTime())
+  if (end !== e) return false
+  for (const r of RANGES) {
+    if (!r.days) continue
+    const d = new Date(now)
+    d.setDate(d.getDate() - r.days)
+    if (fromTs(d.getTime()) === start) return true
+  }
+  return false
+}
 </script>
 
 <template>
@@ -76,11 +97,23 @@ onMounted(() => {
         :class="{ active: activeRange === r.id }"
         @click="setRange(r)">{{ r.label }}</button>
     </div>
-    <div class="inputs">
-      <input type="date" v-model="startIso" :max="endIso || todayIso()" />
-      <span class="sep">→</span>
-      <input type="date" v-model="endIso" :min="startIso" :max="todayIso()" />
-    </div>
+    <n-date-picker
+      v-model:value="tsStart"
+      type="date"
+      :size="size"
+      clearable
+      placeholder="开始日期"
+      style="width: 140px"
+    />
+    <span class="sep">→</span>
+    <n-date-picker
+      v-model:value="tsEnd"
+      type="date"
+      :size="size"
+      clearable
+      placeholder="结束日期"
+      style="width: 140px"
+    />
   </div>
 </template>
 
@@ -112,21 +145,5 @@ onMounted(() => {
   color: #000;
   font-weight: 600;
 }
-.inputs {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.inputs input {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 5px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-family: 'Consolas', monospace;
-  color-scheme: dark;
-}
-.inputs input:focus { border-color: var(--yellow); outline: none; }
 .sep { color: var(--text-muted); font-size: 14px; }
 </style>

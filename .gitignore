@@ -7,18 +7,18 @@ __pycache__/
 *.egg-info/
 .Python
 
-# 虚拟环境
+# Virtual env
 venv/
 env/
 ENV/
 .venv/
 
-# 前端
+# Frontend
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
-# 数据和输出 (运行时产物; backend/data 是 .py 源码包, 不受这些规则影响)
+# Data and output
 /data/
 /output/
 *.csv
@@ -27,23 +27,30 @@ frontend/.vite/
 *.jpeg
 *.gif
 
-# SQLite 运行时数据库 (任何位置都不入库)
+# SQLite
 *.db
 *.db-shm
 *.db-wal
 
-# 日志
+# Logs
 *.log
+logs/
 
 # IDE
-.vscode/
-.idea/
+# .vscode/launch.json + .idea/runConfigurations/ 公共, 提交
+# .vscode/settings.json + .idea/workspace.xml 等用户私有, 忽略
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/usage.statistics.xml
+.idea/shelf/
+.idea/workspace/
+.vscode/settings.json
 *.swp
 *.swo
 .DS_Store
 Thumbs.db
 
-# 环境变量
+# Environment
 .env
 .env.local
 
@@ -51,19 +58,12 @@ Thumbs.db
 build/
 dist/
 *.spec
+out/
 
-# 临时文件
+# Temp files
 *.tmp
 *.bak
 
-# 测试文件
+# Test files
 _test_*.py
 *_test.py
-
-# PyInstaller/IDE 构建输出
-out/
-
-# 运行时数据库在各目录的残留
-backend/data/*.db
-backend/data/*.db-shm
-backend/data/*.db-wal

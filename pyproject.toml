@@ -1,0 +1,53 @@
+[project]
+name = "k7quant"
+version = "4.0.0"
+description = "Binance 加密货币量化回测系统 - 本地单机的因子 + DSL 策略 + 多周期回测"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "K7Quant Team" }]
+
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.0.0",
+    "sqlalchemy>=2.0.0",
+    "requests>=2.31.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "matplotlib>=3.7.0",
+    "tqdm>=4.66.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "httpx>=0.25",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+k7quant = "backend.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E501"]  # 行太长 (允许)
+
+# === IDE / Editor 配置 ===
+[tool.pyright]
+pythonVersion = "3.10"
+include = ["backend"]
+exclude = ["**/node_modules", "**/venv", "**/__pycache__"]
+reportMissingImports = "warning"
