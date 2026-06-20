@@ -3,7 +3,6 @@ defineProps({
   timeframes: Array,
   modelValue: String,
 })
-
 const emit = defineEmits(['update:modelValue', 'change'])
 
 function select(tf) {
@@ -14,6 +13,7 @@ function select(tf) {
 
 <template>
   <div class="picker">
+    <span class="lbl">K线</span>
     <button v-for="tf in timeframes" :key="tf"
       :class="{ active: modelValue === tf }"
       @click="select(tf)">{{ tf }}</button>
@@ -25,24 +25,24 @@ function select(tf) {
   display: flex;
   align-items: center;
   gap: 2px;
-  background: #0b0e11;
-  border: 1px solid var(--binance-border);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 3px;
+  padding: 3px 6px;
 }
+.picker .lbl { font-size: 11px; color: var(--text-secondary); padding: 0 4px; }
 .picker button {
   background: transparent;
-  color: var(--binance-text-secondary);
-  padding: 5px 9px;
+  color: var(--text-secondary);
+  padding: 4px 8px;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 11px;
   font-family: 'Consolas', monospace;
-  transition: all 0.2s;
 }
-.picker button:hover { color: var(--binance-text); }
+.picker button:hover { color: var(--text); }
 .picker button.active {
-  background: var(--binance-yellow);
-  color: #0b0e11;
+  background: var(--yellow);
+  color: #000;
   font-weight: 600;
 }
 </style>

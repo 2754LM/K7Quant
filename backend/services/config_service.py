@@ -1,41 +1,27 @@
-"""配置业务层: 读写 settings + symbols"""
-from pathlib import Path
-
-from quant_core.settings import (
-    load_settings, update_settings, load_symbols, save_symbols,
-)
-from quant_core.strategies import ALL_STRATEGIES
+"""配置业务: 读写 settings + symbols + 预置策略"""
+from backend.core import config as sys_config
+from backend.storage import crud
+from backend.strategy import get_builtin_strategies
 
 
 def get_full_config() -> dict:
-    s = load_settings(reload=True)
+    settings = sys_config.load_config()
+    symbols = crud.list_symbols()
+    strategies = []
+    for s in get_builtin_strategies():
+        strategies.append({
+            "id": s["name"],  # 临时用 name 当 id (内置没 DB id)
+            "name": s["name"],
+            "description": s["description"],
+            "category": s["category"],
+            "params_schema": s.get("params_schema", {}),
+            "is_builtin": True,
+        })
+    # 也加上 DB 里的自定义策略
+    for s in crud.list_strategies():
+        strategies.append(s)
     return {
-        "settings": s,
-        "symbols": load_symbols(reload=True)["symbols"],
-        "strategies": [{
-            "id": st.id, "name": st.name, "icon": st.icon,
-            "description": st.description, "category": st.category,
-            "params_schema": st.params_schema,
-        } for st in ALL_STRATEGIES],
+        "settings": settings,
+        "symbols": symbols,
+        "strategies": strategies,
     }
-
-
-def update_active_symbols(symbols: list) -> dict:
-    """返回新的完整 settings"""
-    return update_settings({"active_symbols": symbols})
-
-
-def update_strategy_defaults(strategy: str, params: dict) -> dict:
-    return update_settings({f"strategy_defaults.{strategy}": params})
-
-
-def update_timeframes(timeframes: list) -> dict:
-    return update_settings({"timeframes": timeframes})
-
-
-def reset_settings():
-    """重置为默认配置"""
-    from quant_core.settings import SETTINGS_PATH
-    if SETTINGS_PATH.exists():
-        SETTINGS_PATH.unlink()
-    return load_settings(reload=True)

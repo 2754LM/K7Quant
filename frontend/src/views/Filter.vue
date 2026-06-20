@@ -1,14 +1,13 @@
 <script setup>
-import { ref } from 'vue'
-import { filterSymbols } from '../api'
+import { ref, computed, inject } from 'vue'
+import { filterSymbols, getStrategies } from '../api'
 
-import StrategyPicker from '../components/StrategyPicker.vue'
-import TimeframePicker from '../components/TimeframePicker.vue'
+import StateView from '../components/StateView.vue'
 
-const props = defineProps({ cfg: Object })
+const cfg = inject('cfg')
 
 const params = ref({
-  strategy: 'ma_cross',
+  strategy_id: null,
   timeframe: '1d',
   start_date: '20240101', end_date: '20250601',
   min_return: -1.0, max_return: 100.0,
@@ -21,11 +20,7 @@ const loading = ref(false)
 const error = ref('')
 const count = ref(0)
 
-const symbolInfo = computed(() => {
-  const m = {}
-  for (const s of props.cfg?.symbols || []) m[s.symbol] = s
-  return m
-})
+const strategies = computed(() => cfg.value?.strategies || [])
 
 const presets = [
   { name: '🚀 牛市赢家', patch: { min_return: 0.5, min_sharpe: 0.5 } },
@@ -36,7 +31,11 @@ const presets = [
   { name: '🏔️ 高价币 (> $1000)', patch: { min_price: 1000 } },
 ]
 
-import { computed } from 'vue'
+const symbolInfo = computed(() => {
+  const m = {}
+  for (const s of cfg.value?.symbols || []) m[s.symbol] = s
+  return m
+})
 
 async function run() {
   loading.value = true
@@ -73,22 +72,32 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
       <h3>筛选条件</h3>
       <div class="form-grid">
         <div class="form-row">
-          <label>策略</label>
-          <StrategyPicker :strategies="cfg.strategies" v-model="params.strategy" @change="run" />
+          <label>策略 (可选)</label>
+          <select v-model="params.strategy_id">
+            <option :value="null">无 (按涨幅+价格)</option>
+            <option v-for="s in strategies" :key="s.id" :value="s.id">
+              {{ s.name }}
+            </option>
+          </select>
         </div>
         <div class="form-row">
-          <label>K线周期</label>
-          <TimeframePicker :timeframes="cfg.settings.timeframes" v-model="params.timeframe" />
+          <label>K线</label>
+          <select v-model="params.timeframe">
+            <option value="1h">1h</option>
+            <option value="4h">4h</option>
+            <option value="1d">1d</option>
+            <option value="1w">1w</option>
+          </select>
         </div>
         <div class="form-row">
           <label>区间最低涨幅</label>
           <input type="number" v-model.number="params.min_return" step="0.1" />
-          <span class="hint">-1 = 跌100%, 0.5 = 涨50%</span>
+          <span class="hint">-1=跌100%, 0.5=涨50%</span>
         </div>
         <div class="form-row">
           <label>区间最高涨幅</label>
           <input type="number" v-model.number="params.max_return" step="1" />
-          <span class="hint">避免选到过热币</span>
+          <span class="hint">避免过热</span>
         </div>
         <div class="form-row">
           <label>最低价格</label>
@@ -112,13 +121,14 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
           <input type="text" v-model="params.end_date" />
         </div>
       </div>
-      <button class="run-btn" @click="run" :disabled="loading">{{ loading ? '筛选中...' : '开始筛选' }}</button>
+      <button class="btn-primary" @click="run" :disabled="loading">
+        {{ loading ? '筛选中...' : '开始筛选' }}
+      </button>
     </div>
 
     <div v-if="results.length" class="results-card">
       <div class="results-header">
         <h3>筛选结果 ({{ count }} 个)</h3>
-        <div class="sort-tip">按夏普排序</div>
       </div>
       <table>
         <thead>
@@ -135,21 +145,23 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
             <td><span class="cat-badge">{{ symbolInfo[r.symbol]?.category || '—' }}</span></td>
             <td>${{ fmt(r.last_close) }}</td>
             <td :class="r.period_return >= 0 ? 'pos' : 'neg'">{{ fmt(r.period_return) }}%</td>
-            <td :class="r.sharpe >= 1 ? 'pos' : r.sharpe < 0 ? 'neg' : ''">{{ fmt(r.sharpe) }}</td>
+            <td :class="r.sharpe >= 1 ? 'pos' : r.sharpe < 0 ? 'neg' : ''">
+              {{ r.sharpe !== null && r.sharpe !== undefined ? fmt(r.sharpe) : '—' }}
+            </td>
           </tr>
         </tbody>
       </table>
     </div>
-    <div v-else-if="!loading && !error" class="empty">点击「开始筛选」或选个预设场景</div>
-    <div v-if="error" class="error">{{ error }}</div>
+    <StateView :loading="loading" :error="error" empty-text="点击「开始筛选」" empty-icon="🔍"
+      v-if="!results.length && !loading && !error" />
   </div>
 </template>
 
 <style scoped>
 .filter-view { display: flex; flex-direction: column; gap: 16px; }
 .preset-bar {
-  background: var(--binance-card);
-  border: 1px solid var(--binance-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px 16px;
   display: flex;
@@ -157,20 +169,19 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
   align-items: center;
   flex-wrap: wrap;
 }
-.preset-label { font-size: 13px; color: var(--binance-text-secondary); }
+.preset-label { font-size: 13px; color: var(--text-secondary); }
 .preset-btn {
-  background: #0b0e11;
-  border: 1px solid var(--binance-border);
-  color: var(--binance-text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
   padding: 6px 14px;
   border-radius: 16px;
   font-size: 13px;
 }
-.preset-btn:hover { background: #2b3139; border-color: var(--binance-yellow); }
-
+.preset-btn:hover { background: var(--bg-elevated); border-color: var(--yellow); }
 .config-card {
-  background: var(--binance-card);
-  border: 1px solid var(--binance-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 20px;
 }
@@ -182,88 +193,54 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
   margin-bottom: 16px;
 }
 .form-row { display: flex; flex-direction: column; gap: 4px; }
-.form-row label { font-size: 12px; color: var(--binance-text-secondary); }
-.form-row input {
-  background: #0b0e11;
-  border: 1px solid var(--binance-border);
-  color: var(--binance-text);
+.form-row label { font-size: 12px; color: var(--text-secondary); }
+.form-row input, .form-row select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
   padding: 8px 12px;
   border-radius: 6px;
   font-size: 13px;
 }
-.form-row input:focus { border-color: var(--binance-yellow); }
-.form-row .hint { font-size: 11px; color: #707684; }
-.run-btn {
-  background: var(--binance-yellow);
-  color: #0b0e11;
-  padding: 10px 24px;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 700;
-}
-.run-btn:disabled { opacity: 0.6; }
-
+.form-row input:focus, .form-row select:focus { border-color: var(--yellow); }
+.form-row .hint { font-size: 11px; color: var(--text-muted); }
 .results-card {
-  background: var(--binance-card);
-  border: 1px solid var(--binance-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 20px;
 }
-.results-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-.results-header h3 { font-size: 16px; }
-.sort-tip { font-size: 12px; color: var(--binance-text-secondary); }
-
+.results-header h3 { font-size: 16px; margin-bottom: 12px; }
 table { width: 100%; border-collapse: collapse; }
 th {
   text-align: left;
   padding: 10px 12px;
-  background: #0b0e11;
-  color: var(--binance-text-secondary);
+  background: var(--bg);
+  color: var(--text-secondary);
   font-size: 11px;
   font-weight: 500;
-  border-bottom: 1px solid var(--binance-border);
+  border-bottom: 1px solid var(--border);
 }
 td {
   padding: 10px 12px;
-  border-bottom: 1px solid #2b3139;
+  border-bottom: 1px solid var(--border);
   font-size: 13px;
   font-family: 'Consolas', monospace;
 }
-tr.top { background: #f0b90b08; }
-tr:hover td { background: #181a20; }
-.sym-cell { font-weight: 600; color: var(--binance-yellow); }
-.name-cell { color: var(--binance-text-secondary); font-family: inherit; font-size: 12px; }
+tr.top { background: rgba(240,185,11,0.04); }
+tr:hover td { background: var(--bg-elevated); }
+.sym-cell { font-weight: 600; color: var(--yellow); }
+.name-cell { color: var(--text-secondary); font-family: inherit; font-size: 12px; }
 .cat-badge {
-  background: #1e88e522;
+  background: rgba(30,136,229,0.15);
   color: #64b5f6;
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 11px;
   font-family: inherit;
 }
-.pos { color: var(--binance-green); }
-.neg { color: var(--binance-red); }
-
-.empty {
-  background: var(--binance-card);
-  border: 1px dashed var(--binance-border);
-  border-radius: 12px;
-  padding: 60px;
-  text-align: center;
-  color: var(--binance-text-secondary);
-}
-.error {
-  padding: 12px;
-  background: #f6465d22;
-  border: 1px solid #f6465d;
-  border-radius: 8px;
-  color: #f6465d;
-}
+.pos { color: var(--green); }
+.neg { color: var(--red); }
 
 @media (max-width: 900px) {
   .form-grid { grid-template-columns: 1fr; }

@@ -1,11 +1,13 @@
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, inject } from 'vue'
 import { getKline } from '../api'
 import * as echarts from 'echarts'
 
 import TimeframePicker from '../components/TimeframePicker.vue'
+import StateView from '../components/StateView.vue'
+import HelpTip from '../components/HelpTip.vue'
 
-const props = defineProps({ cfg: Object })
+const cfg = inject('cfg')
 
 const symbol = ref('BTCUSDT')
 const timeframe = ref('4h')
@@ -20,12 +22,11 @@ let chart = null
 
 const symbolInfo = computed(() => {
   const m = {}
-  for (const s of props.cfg?.symbols || []) m[s.symbol] = s
+  for (const s of cfg.value?.symbols || []) m[s.symbol] = s
   return m
 })
-
-const timeframes = computed(() => props.cfg?.settings?.timeframes || ['1d'])
-const allSymbols = computed(() => (props.cfg?.symbols || []).map(s => s.symbol))
+const timeframes = computed(() => cfg.value?.timeframes || ['1d'])
+const allSymbols = computed(() => (cfg.value?.symbols || []).map(s => s.symbol))
 
 const curInfo = computed(() => symbolInfo.value[symbol.value] || {})
 const stats = computed(() => data.value?.stats || {})
@@ -61,7 +62,7 @@ function drawChart() {
   if (!data.value?.kline?.length) return
   const el = document.getElementById('kline-chart')
   if (!el) return
-  if (!chart) chart = echarts.init(el, 'dark')
+  if (!chart) chart = echarts.init(el, null, { renderer: 'canvas' })
   const dates = data.value.kline.map(k => k.date)
   const kValues = data.value.kline.map((k, i) => [i, k.open, k.close, k.low, k.high])
   const series = [{
@@ -102,18 +103,18 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
     <div class="info-card" v-if="curInfo.symbol">
       <div class="info-header">
         <div>
-          <h2>{{ curInfo.name_zh }} <span class="en">{{ curInfo.name_en }}</span></h2>
+          <h2>
+            {{ curInfo.name_zh }}
+            <span class="en">({{ curInfo.name_en }} · {{ curInfo.symbol }})</span>
+          </h2>
           <div class="meta">
-            <span class="badge">{{ curInfo.symbol }}</span>
-            <span class="badge category">{{ curInfo.category }}</span>
+            <span class="badge">{{ curInfo.category }}</span>
             <span class="badge rank">市值 #{{ curInfo.market_cap_rank }}</span>
+            <span v-for="t in curInfo.tags" :key="t" class="tag">#{{ t }}</span>
           </div>
         </div>
       </div>
       <p class="desc">{{ curInfo.description }}</p>
-      <div class="tags">
-        <span v-for="t in curInfo.tags" :key="t" class="tag">#{{ t }}</span>
-      </div>
     </div>
 
     <div class="toolbar">
@@ -139,7 +140,9 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
       <div class="stat"><span class="lbl">区间</span><span class="val small">{{ stats.start }} → {{ stats.end }}</span></div>
       <div class="stat"><span class="lbl">首日</span><span class="val">{{ fmt(stats.first_close) }}</span></div>
       <div class="stat"><span class="lbl">最新</span><span class="val">{{ fmt(stats.last_close) }}</span></div>
-      <div class="stat"><span class="lbl">涨跌</span><span class="val" :class="stats.period_return >= 0 ? 'pos' : 'neg'">{{ fmtPct(stats.period_return) }}</span></div>
+      <div class="stat"><span class="lbl">区间涨跌</span>
+        <span class="val" :class="stats.period_return >= 0 ? 'pos' : 'neg'">{{ fmtPct(stats.period_return) }}</span>
+      </div>
       <div class="stat"><span class="lbl">最高</span><span class="val">{{ fmt(stats.max_price) }}</span></div>
       <div class="stat"><span class="lbl">最低</span><span class="val">{{ fmt(stats.min_price) }}</span></div>
     </div>
@@ -177,55 +180,47 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
       </table>
     </div>
 
-    <div v-if="error" class="error">{{ error }}</div>
+    <StateView :loading="loading" :error="error" empty-text="请选择币种" empty-icon="📊" v-if="!data && !loading && !error" />
   </div>
 </template>
 
 <style scoped>
-.kline-view {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
+.kline-view { display: flex; flex-direction: column; gap: 16px; }
 .info-card {
-  background: var(--binance-card);
-  border: 1px solid var(--binance-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 20px 24px;
 }
-.info-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
-.info-header h2 { font-size: 24px; color: var(--binance-yellow); }
-.info-header .en { font-size: 14px; color: var(--binance-text-secondary); font-weight: 400; margin-left: 8px; }
-.meta { display: flex; gap: 8px; margin-top: 8px; }
+.info-header { margin-bottom: 12px; }
+.info-header h2 { font-size: 24px; color: var(--yellow); }
+.info-header .en { font-size: 14px; color: var(--text-secondary); font-weight: 400; margin-left: 8px; }
+.meta { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .badge {
-  background: #2b3139;
-  color: var(--binance-text-secondary);
-  padding: 3px 8px;
+  background: rgba(240,185,11,0.15);
+  color: var(--yellow);
+  padding: 3px 10px;
   border-radius: 4px;
   font-size: 11px;
   font-family: 'Consolas', monospace;
+  border: 1px solid rgba(240,185,11,0.3);
 }
-.badge.category { background: #1e88e522; color: #64b5f6; }
-.badge.rank { background: #f0b90b22; color: var(--binance-yellow); }
-.desc {
-  font-size: 13px;
-  color: var(--binance-text-secondary);
-  line-height: 1.7;
-  margin-bottom: 12px;
-  white-space: pre-line;
-}
-.tags { display: flex; gap: 6px; flex-wrap: wrap; }
 .tag {
-  background: #0b0e11;
-  color: var(--binance-yellow);
+  background: var(--bg);
+  color: var(--text-secondary);
   padding: 3px 10px;
   border-radius: 4px;
   font-size: 11px;
 }
-
+.desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  white-space: pre-line;
+}
 .toolbar {
-  background: var(--binance-card);
-  border: 1px solid var(--binance-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px 16px;
   display: flex;
@@ -236,46 +231,44 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
 }
 .toolbar-left, .toolbar-right { display: flex; gap: 8px; align-items: center; }
 .toolbar select, .toolbar input {
-  background: #0b0e11;
-  border: 1px solid var(--binance-border);
-  color: var(--binance-text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
   padding: 8px 12px;
   border-radius: 6px;
   font-size: 13px;
 }
 .toolbar input { width: 110px; }
 .toolbar button {
-  background: #2b3139;
-  color: var(--binance-text);
+  background: var(--bg-elevated);
+  color: var(--text);
   padding: 8px 16px;
   border-radius: 6px;
   font-size: 13px;
 }
-.toolbar button.active { background: var(--binance-yellow); color: #0b0e11; font-weight: 600; }
-
+.toolbar button.active { background: var(--yellow); color: #000; font-weight: 600; }
 .stats-row {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 10px;
 }
 .stat {
-  background: var(--binance-card);
-  border: 1px solid var(--binance-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   padding: 10px 12px;
   border-radius: 6px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.stat .lbl { font-size: 11px; color: var(--binance-text-secondary); }
+.stat .lbl { font-size: 11px; color: var(--text-secondary); }
 .stat .val { font-size: 14px; font-weight: 600; font-family: 'Consolas', monospace; }
 .stat .val.small { font-size: 11px; }
-.val.pos { color: var(--binance-green); }
-.val.neg { color: var(--binance-red); }
-
+.val.pos { color: var(--green); }
+.val.neg { color: var(--red); }
 .chart-area {
-  background: var(--binance-card);
-  border: 1px solid var(--binance-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px;
 }
@@ -283,7 +276,7 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
   display: flex;
   gap: 16px;
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--binance-border);
+  border-bottom: 1px solid var(--border);
   margin-bottom: 8px;
 }
 .ma-toggles label {
@@ -291,46 +284,37 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
   align-items: center;
   gap: 4px;
   font-size: 13px;
-  color: var(--binance-text-secondary);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 #kline-chart { height: 500px; }
-
 .table-area {
   max-height: 600px;
   overflow: auto;
-  background: var(--binance-card);
-  border: 1px solid var(--binance-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 table { width: 100%; border-collapse: collapse; }
 th {
   text-align: left;
   padding: 10px 12px;
-  background: #0b0e11;
-  color: var(--binance-text-secondary);
+  background: var(--bg);
+  color: var(--text-secondary);
   font-size: 11px;
   font-weight: 500;
-  border-bottom: 1px solid var(--binance-border);
+  border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
   z-index: 1;
 }
 td {
   padding: 8px 12px;
-  border-bottom: 1px solid #2b3139;
+  border-bottom: 1px solid var(--border);
   font-size: 13px;
   font-family: 'Consolas', monospace;
 }
-tr:hover td { background: #181a20; }
-.pos { color: var(--binance-green); }
-.neg { color: var(--binance-red); }
-
-.error {
-  padding: 12px;
-  background: #f6465d22;
-  border: 1px solid #f6465d;
-  border-radius: 8px;
-  color: #f6465d;
-}
+tr:hover td { background: var(--bg-elevated); }
+.pos { color: var(--green); }
+.neg { color: var(--red); }
 </style>

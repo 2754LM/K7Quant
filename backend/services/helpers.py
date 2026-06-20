@@ -1,4 +1,4 @@
-"""通用辅助函数"""
+"""通用工具"""
 import numpy as np
 import pandas as pd
 

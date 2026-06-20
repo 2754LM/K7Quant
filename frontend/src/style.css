@@ -2,30 +2,153 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: #0b0e11;
-  color: #eaecef;
+  background: var(--bg);
+  color: var(--text);
   min-height: 100vh;
 }
 
 #app { min-height: 100vh; }
 
 button { cursor: pointer; border: none; outline: none; font-family: inherit; }
-input, select { font-family: inherit; outline: none; }
+input, select, textarea { font-family: inherit; outline: none; }
+a { color: inherit; text-decoration: none; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: #1e2329; }
-::-webkit-scrollbar-thumb { background: #474d57; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #707684; }
+::-webkit-scrollbar-track { background: var(--bg-elevated); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
 
-/* Binance 风格色 */
 :root {
-  --binance-yellow: #f0b90b;
-  --binance-bg: #0b0e11;
-  --binance-card: #1e2329;
-  --binance-border: #2b3139;
-  --binance-text: #eaecef;
-  --binance-text-secondary: #b7bdc6;
-  --binance-green: #02c076;
-  --binance-red: #f6465d;
-  --binance-blue: #1e88e5;
+  --bg: #0b0e11;
+  --bg-card: #181a20;
+  --bg-elevated: #1e2329;
+  --border: #2b3139;
+  --text: #eaecef;
+  --text-secondary: #b7bdc6;
+  --text-muted: #848e9c;
+  --yellow: #f0b90b;
+  --yellow-dim: #fcd535;
+  --green: #02c076;
+  --green-dim: #0ecb81;
+  --red: #f6465d;
+  --red-dim: #ff7b72;
+  --blue: #1e88e5;
+  --purple: #8b5cf6;
 }
+
+[data-theme="light"] {
+  --bg: #fafafa;
+  --bg-card: #ffffff;
+  --bg-elevated: #f4f4f5;
+  --border: #e4e4e7;
+  --text: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #a1a1aa;
+  --yellow: #d97706;
+  --yellow-dim: #f59e0b;
+  --green: #16a34a;
+  --green-dim: #22c55e;
+  --red: #dc2626;
+  --red-dim: #ef4444;
+  --blue: #2563eb;
+  --purple: #7c3aed;
+}
+
+.tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.tooltip-wrap .tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  color: var(--bg-card);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: help;
+  margin-left: 4px;
+  user-select: none;
+}
+.tooltip-wrap .tip:hover { background: var(--yellow); }
+.tooltip-wrap .tip-content {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: normal;
+  width: 240px;
+  text-align: left;
+  line-height: 1.5;
+  z-index: 100;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  font-weight: 400;
+}
+.tooltip-wrap:hover .tip-content {
+  opacity: 1;
+  visibility: visible;
+}
+
+[data-show-tooltips="false"] .tooltip-wrap { display: none; }
+
+.btn-primary {
+  background: var(--yellow);
+  color: #000;
+  padding: 8px 18px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 13px;
+}
+.btn-primary:hover { background: var(--yellow-dim); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-secondary {
+  background: var(--bg-elevated);
+  color: var(--text);
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover { background: var(--border); }
+
+.btn-danger {
+  background: transparent;
+  color: var(--red);
+  border: 1px solid var(--red);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.btn-danger:hover { background: var(--red); color: #fff; }
+
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--yellow);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-muted);
+}
+.empty-state .icon { font-size: 36px; margin-bottom: 12px; opacity: 0.5; }

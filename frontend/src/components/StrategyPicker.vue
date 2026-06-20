@@ -1,9 +1,8 @@
 <script setup>
 defineProps({
   strategies: Array,
-  modelValue: String,
+  modelValue: [String, Number],
 })
-
 const emit = defineEmits(['update:modelValue', 'change'])
 
 function select(id) {
@@ -15,10 +14,10 @@ function select(id) {
 <template>
   <div class="picker">
     <button v-for="s in strategies" :key="s.id"
-      :class="{ active: modelValue === s.id }"
+      :class="{ active: Number(modelValue) === s.id }"
       @click="select(s.id)"
       :title="s.description">
-      <span class="icon">{{ s.icon }}</span>
+      <span class="icon">{{ s.icon || '📊' }}</span>
       <span class="name">{{ s.name }}</span>
     </button>
   </div>
@@ -27,9 +26,9 @@ function select(id) {
 <style scoped>
 .picker { display: flex; gap: 6px; flex-wrap: wrap; }
 .picker button {
-  background: #0b0e11;
-  border: 1px solid var(--binance-border);
-  color: var(--binance-text-secondary);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
   padding: 8px 14px;
   border-radius: 8px;
   display: flex;
@@ -39,13 +38,13 @@ function select(id) {
   transition: all 0.2s;
 }
 .picker button:hover {
-  border-color: var(--binance-yellow);
-  color: var(--binance-text);
+  border-color: var(--yellow);
+  color: var(--text);
 }
 .picker button.active {
-  background: #f0b90b11;
-  border-color: var(--binance-yellow);
-  color: var(--binance-yellow);
+  background: rgba(240,185,11,0.1);
+  border-color: var(--yellow);
+  color: var(--yellow);
 }
 .icon { font-size: 16px; }
 </style>
