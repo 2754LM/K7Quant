@@ -6,10 +6,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+import time as _time
 
 from backend.core import ROOT, LOGS_DIR
 from backend.core.logger import log
@@ -26,13 +28,19 @@ from backend.api import (
 async def lifespan(app: FastAPI):
     log.info("=" * 60)
     log.info("K7Quant starting...")
-    load_config()
+    cfg = load_config()
+    log.info(f"[init] config.yaml 加载: port={cfg.get('server', {}).get('port')}, "
+             f"tf默认={cfg.get('backtest', {}).get('default_timeframe')}")
     init_schema()  # ORM 自动建表
+    log.info("[init] ORM 表结构就绪")
     symbol_service.init_default_symbols()
+    log.info("[init] 默认币种注册完成")
     strategy_service.init_builtin_strategies()
+    log.info("[init] 内置策略注册完成")
     log.info("Config loaded, DB initialized, builtin strategies registered")
     log.info("=" * 60)
     yield
+    log.info("K7Quant shutting down...")
 
 
 app = FastAPI(
@@ -54,6 +62,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# 请求日志中间件: 记录每个 HTTP 请求的耗时和状态
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    t0 = _time.time()
+    response = await call_next(request)
+    ms = (_time.time() - t0) * 1000
+    # 只记录 /api 路径, 避免静态资源刷屏
+    if request.url.path.startswith("/api"):
+        log.info(f"[HTTP] {request.method} {request.url.path} → {response.status_code} ({ms:.0f}ms)")
+    return response
 
 
 # 注册路由

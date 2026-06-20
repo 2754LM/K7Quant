@@ -11,8 +11,14 @@ if not exist venv\Scripts\python.exe (
     exit /b 1
 )
 
+rem 强制清理旧的前端构建产物, 避免修改后没生效
+if exist frontend\dist (
+    echo [清理] 删除旧的 frontend\dist 重新构建...
+    rd /s /q frontend\dist
+)
+
 if not exist frontend\dist\index.html (
-    echo [提示] 首次运行，构建前端...
+    echo [构建] 首次运行 / 重新构建前端...
     cd frontend
     call npm install --registry https://registry.npmmirror.com
     call npm run build

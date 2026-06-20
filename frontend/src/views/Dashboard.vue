@@ -22,12 +22,62 @@ const multiResults = ref(null)
 const params = ref({
   strategy_id: null,
   timeframe: '4h',
+  symbols: null,         // null = 使用全部活跃币种
   ma_short: 7, ma_long: 25,
   top_n: 3, hold: 12, lookback: 24,
   rsi_period: 14, rsi_oversold: 30, rsi_overbought: 70,
   macd_fast: 12, macd_slow: 26, macd_signal: 9,
   start_date: '20240101', end_date: '20250601',
 })
+
+// ---------- 币池选择 ----------
+const poolMode = ref('all')  // 'all' | 'custom'
+const poolSelection = ref(new Set())  // 用户选择的币种
+const poolPickerOpen = ref(false)
+const poolSearch = ref('')
+
+const allActiveSymbols = computed(() => {
+  const active = cfg.value?.active_symbols || []
+  if (active.length) return active
+  return (cfg.value?.symbols || []).filter(s => s.is_active !== false).map(s => s.symbol)
+})
+const allSymbolsList = computed(() => (cfg.value?.symbols || []).map(s => s.symbol))
+const filteredPoolList = computed(() => {
+  const t = poolSearch.value.trim().toLowerCase()
+  const symInfo = {}
+  for (const s of (cfg.value?.symbols || [])) symInfo[s.symbol] = s
+  let list = allSymbolsList.value
+  if (t) list = list.filter(s => s.toLowerCase().includes(t) || (symInfo[s]?.name_zh || '').toLowerCase().includes(t))
+  return list.map(s => ({ symbol: s, name: symInfo[s]?.name_zh || '' }))
+})
+const effectivePoolCount = computed(() => {
+  if (poolMode.value === 'all') return allActiveSymbols.value.length
+  return poolSelection.value.size
+})
+const effectivePoolLabel = computed(() => {
+  if (poolMode.value === 'all') return `全部活跃 (${allActiveSymbols.value.length})`
+  return `自定义 (${poolSelection.value.size})`
+})
+
+// 同步 params.symbols, 给 scan_pool 用
+watch([poolMode, poolSelection], () => {
+  if (poolMode.value === 'all') {
+    params.value.symbols = null
+  } else {
+    params.value.symbols = Array.from(poolSelection.value)
+  }
+}, { deep: true, immediate: true })
+
+function togglePoolSymbol(sym) {
+  if (poolSelection.value.has(sym)) poolSelection.value.delete(sym)
+  else poolSelection.value.add(sym)
+  poolSelection.value = new Set(poolSelection.value)
+}
+function selectAllFromList() {
+  for (const s of filteredPoolList.value) poolSelection.value.add(s.symbol)
+  poolSelection.value = new Set(poolSelection.value)
+}
+function clearPoolSelection() { poolSelection.value = new Set() }
 
 const result = ref(null)
 const loading = ref(false)
@@ -464,6 +514,40 @@ function drawMultiChart() {
           <label>区间</label>
           <DateRangePicker v-model:start="params.start_date" v-model:end="params.end_date" default-range="3m" />
         </div>
+        <!-- 币池选择 -->
+        <div class="cfg pool-cfg">
+          <label>币池 <span class="pool-count">({{ effectivePoolCount }})</span></label>
+          <div class="pool-picker">
+            <button class="pool-toggle" :class="{ active: poolMode === 'all' }"
+              @click="poolMode = 'all'" title="扫描所有活跃币种">全部活跃</button>
+            <button class="pool-toggle" :class="{ active: poolMode === 'custom' }"
+              @click="poolMode = 'custom'; poolPickerOpen = true" title="选择指定币种">自定义</button>
+            <button v-if="poolMode === 'custom'" class="pool-edit"
+              @click="poolPickerOpen = !poolPickerOpen" :title="poolPickerOpen ? '收起选择器' : '打开选择器'">
+              {{ poolPickerOpen ? '收起' : '编辑' }}
+            </button>
+            <transition name="slide">
+              <div v-if="poolMode === 'custom' && poolPickerOpen" class="pool-panel">
+                <div class="pool-tools">
+                  <input v-model="poolSearch" type="text" class="pool-search" placeholder="🔍 搜索币种/名称..." />
+                  <button class="pool-mini" @click="selectAllFromList">勾选当前</button>
+                  <button class="pool-mini" @click="clearPoolSelection">清空</button>
+                  <span class="pool-hint">已选 {{ poolSelection.size }} 个</span>
+                </div>
+                <div class="pool-grid">
+                  <label v-for="s in filteredPoolList" :key="s.symbol"
+                    :class="['pool-chip', { active: poolSelection.has(s.symbol) }]">
+                    <input type="checkbox" :checked="poolSelection.has(s.symbol)"
+                      @change="togglePoolSymbol(s.symbol)" />
+                    <span class="pool-sym">{{ s.symbol }}</span>
+                    <span class="pool-name">{{ s.name }}</span>
+                  </label>
+                  <div v-if="!filteredPoolList.length" class="pool-empty">未找到币种</div>
+                </div>
+              </div>
+            </transition>
+          </div>
+        </div>
         <div v-if="activeStrategy?.description" class="desc-box">
           <span>💡</span>
           <span>{{ activeStrategy.description }}</span>
@@ -802,6 +886,122 @@ function drawMultiChart() {
 .multi-results h3 { font-size: 16px; margin-bottom: 12px; }
 .multi-results .tf-name { font-weight: 600; color: var(--yellow); font-family: 'Consolas', monospace; }
 .date-cfg { min-width: 320px; }
+
+/* 币池选择 */
+.pool-cfg { min-width: 280px; }
+.pool-cfg label { display: flex; align-items: center; gap: 4px; }
+.pool-count { color: var(--yellow); font-family: 'Consolas', monospace; }
+.pool-picker { display: flex; flex-direction: column; gap: 6px; position: relative; }
+.pool-toggle {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pool-toggle.active {
+  background: rgba(240,185,11,0.15);
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+.pool-toggle:hover:not(.active) { border-color: var(--yellow); }
+.pool-toggle + .pool-toggle { margin-left: 4px; }
+.pool-edit {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: 4px;
+}
+.pool-edit:hover { border-color: var(--yellow); color: var(--yellow); }
+.pool-panel {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 50;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  width: 480px;
+  max-width: 90vw;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  margin-top: 4px;
+}
+.pool-tools {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.pool-search {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  outline: none;
+}
+.pool-search:focus { border-color: var(--yellow); }
+.pool-mini {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.pool-mini:hover { border-color: var(--yellow); color: var(--yellow); }
+.pool-hint { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+.pool-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.pool-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  font-family: 'Consolas', monospace;
+}
+.pool-chip:hover { border-color: var(--yellow); }
+.pool-chip.active {
+  background: rgba(240,185,11,0.15);
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+.pool-chip input { margin: 0; accent-color: var(--yellow); }
+.pool-sym { font-weight: 600; }
+.pool-name {
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 10px;
+  margin-left: auto;
+}
+.pool-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 20px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(8, 1fr);

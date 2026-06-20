@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, provide } from 'vue'
+import { ref, computed, onMounted, onUnmounted, provide } from 'vue'
 import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme } from 'naive-ui'
 import { getConfig, listSymbols, getStrategies } from './api'
 import Dashboard from './views/Dashboard.vue'
@@ -12,6 +12,7 @@ import DataPanel from './views/DataPanel.vue'
 import Settings from './views/Settings.vue'
 import Trade from './views/Trade.vue'
 import Learn from './views/Learn.vue'
+import LogViewer from './views/LogViewer.vue'
 import SystemLogPanel from './components/SystemLogPanel.vue'
 
 const themeOverrides = {
@@ -47,6 +48,7 @@ const TABS = [
   { id: 'trade', label: '📈 模拟/实盘', comp: Trade },
   { id: 'settings', label: '⚙️ 设置', comp: Settings, needsCfg: true, needsReload: true },
   { id: 'learn', label: '📚 课堂', comp: Learn, needsCfg: true },
+  { id: 'logs', label: '📋 日志', comp: LogViewer, needsCfg: false },
 ]
 
 const activeTab = ref('dashboard')
@@ -84,7 +86,15 @@ async function reloadCfg() {
 provide('cfg', cfg)
 provide('reload', reloadCfg)
 
-onMounted(reloadCfg)
+function navigate(event) {
+  const target = event.detail
+  if (target === 'logs') activeTab.value = 'logs'
+}
+onMounted(() => {
+  reloadCfg()
+  window.addEventListener('navigate', navigate)
+})
+onUnmounted(() => window.removeEventListener('navigate', navigate))
 </script>
 
 <template>

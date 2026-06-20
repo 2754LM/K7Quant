@@ -44,6 +44,7 @@ const tableRows = computed(() => {
 watch([symbol, timeframe], () => load(), { immediate: true })
 watch(visibleIndicators, () => drawChart(), { deep: true })
 watch([startDate, endDate], () => load())
+watch(tableView, (v) => { if (v === 'chart') nextTick(() => drawChart()) })
 
 function getOrInitChart(elId) {
   const el = document.getElementById(elId)
@@ -189,17 +190,16 @@ function drawChart() {
       xAxisIndex: 0, yAxisIndex: 0,
       lineStyle: { width: 0.8, color: '#8e44ad', opacity: 0.6 } })
   }
-  // 成交量副图
+  // 成交量副图 (保留每根 bar 涨跌色)
   if (visibleIndicators.value.volume) {
     series.push({
-      name: '成交量', type: 'bar', data: kline.map((k, i) => ({
-        value: i,
+      name: '成交量', type: 'bar',
+      data: kline.map((k) => ({
+        value: k.volume || 0,
         itemStyle: { color: k.close >= k.open ? 'rgba(2,192,118,0.6)' : 'rgba(246,70,93,0.6)' }
       })),
       xAxisIndex: 1, yAxisIndex: 1,
     })
-    // 修正: 成交量要用真实值
-    series[series.length - 1].data = kline.map((k, i) => k.volume || 0)
   }
 
   const yAxis = visibleIndicators.value.volume

@@ -55,12 +55,16 @@ def backtest_single(symbol: str, strategy_id: int, params: dict,
     start = start or sys_config.get("backtest.start_date", "20240101")
     end = end or _resolve_end()
 
+    log.info(f"[backtest_single] 开始: symbol={symbol} tf={timeframe} range={start}..{end} sid={strategy_id}")
+
     df = get_kline(symbol, timeframe, start, end)
     if df.empty:
+        log.warning(f"[backtest_single] 无数据: {symbol} {timeframe}")
         return {"error": f"无 {symbol} 数据"}
 
     strategy = crud.get_strategy(strategy_id)
     if not strategy:
+        log.warning(f"[backtest_single] 策略不存在: id={strategy_id}")
         return {"error": f"策略 ID {strategy_id} 不存在"}
 
     try:
@@ -76,6 +80,7 @@ def backtest_single(symbol: str, strategy_id: int, params: dict,
         sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
                                "position": position})
     except Exception as e:
+        log.error(f"[backtest_single] 策略执行失败: {symbol} sid={strategy_id} err={e}")
         return {"error": f"策略执行失败: {e}"}
 
     bt = Backtester()
@@ -94,6 +99,8 @@ def backtest_single(symbol: str, strategy_id: int, params: dict,
         crud.save_backtest_run(strategy["name"], params, metrics)
     except Exception as e:
         log.warning(f"保存回测记录失败: {e}")
+
+    log.info(f"[backtest_single] 完成: {symbol} ret={safe(metrics.get('total_return')):.4f} sharpe={safe(metrics.get('sharpe')):.2f}")
 
     return {
         "title": title,
@@ -160,6 +167,8 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
     """对所有币种跑同一策略, 返回排名 + 组合"""
     from backend.storage import crud
     params = params or {}
+    import time as _time
+    t0 = _time.time()
 
     timeframe = timeframe or sys_config.get("backtest.default_timeframe", "4h")
     start = start or sys_config.get("backtest.start_date", "20240101")
@@ -167,12 +176,16 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
 
     if not symbols:
         symbols = _active_symbols()
+    log.info(f"[scan_pool] 开始: sid={strategy_id} tf={timeframe} range={start}..{end} pool={len(symbols)} symbols")
     data = get_many(symbols, timeframe, start, end)
     if not data:
+        log.warning(f"[scan_pool] 无数据: pool={len(symbols)}")
         return {"error": "无数据"}
+    log.info(f"[scan_pool] 数据就绪: {len(data)}/{len(symbols)} 个币种")
 
     strategy = crud.get_strategy(strategy_id)
     if not strategy:
+        log.warning(f"[scan_pool] 策略不存在: id={strategy_id}")
         return {"error": f"策略 ID {strategy_id} 不存在"}
 
     bt = Backtester()
@@ -183,8 +196,11 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
         position_size = rules.get("position_size", 1.0)
         leverage = float(params.get("leverage", 1))
     except Exception as e:
+        log.error(f"[scan_pool] 策略编译失败: {e}")
         return {"error": f"策略编译失败: {e}"}
 
+    success_count = 0
+    fail_count = 0
     for sym, df in data.items():
         try:
             signal = signal_fn(df)
@@ -198,10 +214,13 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
                        rebalance_bars=_rebalance_bars(rules))
             m = compute_metrics(r, timeframe=timeframe)
             ranking.append(_ranking_row(sym, m))
+            success_count += 1
         except Exception as e:
-            log.warning(f"[scan] {sym}: {e}")
+            log.warning(f"[scan_pool] {sym} 失败: {e}")
+            fail_count += 1
 
     ranking.sort(key=lambda x: x["sharpe"] if x["sharpe"] is not None else -999, reverse=True)
+    log.info(f"[scan_pool] 单币回测完成: 成功 {success_count}, 失败 {fail_count}")
 
     # 组合曲线 (等权平均)
     combined_df = pd.DataFrame()
@@ -233,6 +252,9 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
         title = f"币池组合 - {strategy['name']} ({len(data)} 个币种)"
         chart_b64 = _save_chart(combined_df, bench, title, f"scan_{strategy_id}_{timeframe}")
         combined_metrics = compute_metrics(combined_df, bench, timeframe)
+
+    elapsed = _time.time() - t0
+    log.info(f"[scan_pool] 完成: {len(ranking)} 个排名, 组合收益={safe(combined_metrics.get('total_return')):.4f}, 耗时 {elapsed:.2f}s")
 
     return {
         "ranking": ranking, "count": len(ranking),

@@ -22,16 +22,21 @@ def get_kline(symbol: str, timeframe: str = None,
     if use_cache:
         df = cache.read(symbol, tf)
         if df is not None and len(df) > 10:
+            log.debug(f"[cache HIT] {symbol} {tf} ({len(df)} rows)")
             return _filter(df, start, end)
 
     try:
+        log.info(f"[fetch] {symbol} {tf} range={start}..{end}")
         df = fetcher.fetch(symbol, tf, start, end)
         if not df.empty:
             cache.write(symbol, tf, df)
+            log.info(f"[fetch OK] {symbol} {tf} {len(df)} rows")
             time.sleep(0.25)
+        else:
+            log.warning(f"[fetch EMPTY] {symbol} {tf}")
         return _filter(df, start, end)
     except Exception as e:
-        log.error(f"下载 {symbol} {tf} 失败: {e}")
+        log.error(f"[fetch FAIL] {symbol} {tf}: {e}")
         return pd.DataFrame()
 
 
@@ -43,6 +48,7 @@ def get_many(symbols: list, timeframe: str = None,
         df = get_kline(s, timeframe, start, end)
         if not df.empty:
             out[s] = df
+    log.info(f"[get_many] 命中 {len(out)}/{len(symbols)} ({timeframe})")
     return out
 
 

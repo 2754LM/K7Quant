@@ -1,4 +1,4 @@
-"""系统日志: 记录 API 调用/错误, 供 UI 显示"""
+// 系统日志: 记录 API 调用/错误, 供 UI 显示
 import { reactive } from 'vue'
 
 const MAX_LOGS = 200

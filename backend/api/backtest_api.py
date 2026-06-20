@@ -1,9 +1,11 @@
 """回测 API"""
+import time as _time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 
 from backend.services import backtest_service
+from backend.core.logger import log
 
 
 router = APIRouter()
@@ -60,6 +62,8 @@ class FilterRequest(BaseModel):
 
 @router.post("/single")
 def single(req: BacktestRequest):
+    t0 = _time.time()
+    log.info(f"[API /backtest/single] symbol={req.symbol} sid={req.strategy_id} tf={req.timeframe}")
     try:
         result = backtest_service.backtest_single(
             symbol=req.symbol, strategy_id=req.strategy_id,
@@ -67,17 +71,22 @@ def single(req: BacktestRequest):
             start=req.start_date, end=req.end_date,
         )
         if "error" in result:
+            log.warning(f"[API /backtest/single] 失败: {result['error']}")
             raise HTTPException(status_code=400, detail=result["error"])
+        log.info(f"[API /backtest/single] 200 ({_time.time()-t0:.2f}s)")
         return result
     except HTTPException:
         raise
     except Exception as e:
+        log.error(f"[API /backtest/single] 500: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/scan")
 def scan(req: BacktestRequest):
+    t0 = _time.time()
+    log.info(f"[API /backtest/scan] sid={req.strategy_id} tf={req.timeframe} symbols={len(req.symbols) if req.symbols else 'auto'}")
     try:
         symbols = req.symbols
         result = backtest_service.scan_pool(
@@ -86,11 +95,14 @@ def scan(req: BacktestRequest):
             start=req.start_date, end=req.end_date,
         )
         if "error" in result:
+            log.warning(f"[API /backtest/scan] 失败: {result['error']}")
             raise HTTPException(status_code=400, detail=result["error"])
+        log.info(f"[API /backtest/scan] 200 count={result.get('count', 0)} ({_time.time()-t0:.2f}s)")
         return result
     except HTTPException:
         raise
     except Exception as e:
+        log.error(f"[API /backtest/scan] 500: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -98,17 +110,22 @@ def scan(req: BacktestRequest):
 @router.post("/code")
 def backtest_code(req: CodeBacktestRequest):
     """用临时代码跑回测 (调试/预览用)"""
+    t0 = _time.time()
+    log.info(f"[API /backtest/code] symbol={req.symbol} tf={req.timeframe} code={len(req.code)} bytes")
     try:
         result = backtest_service.backtest_with_code(
             symbol=req.symbol, code=req.code, params=req.params,
             timeframe=req.timeframe, start=req.start_date, end=req.end_date,
         )
         if "error" in result:
+            log.warning(f"[API /backtest/code] 失败: {result['error']}")
             raise HTTPException(status_code=400, detail=result["error"])
+        log.info(f"[API /backtest/code] 200 ({_time.time()-t0:.2f}s)")
         return result
     except HTTPException:
         raise
     except Exception as e:
+        log.error(f"[API /backtest/code] 500: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -116,8 +133,10 @@ def backtest_code(req: CodeBacktestRequest):
 @router.post("/filter")
 def filter_stocks(req: FilterRequest):
     try:
+        log.info(f"[API /backtest/filter] tf={req.timeframe} symbols={len(req.symbols) if req.symbols else 'auto'}")
         return backtest_service.filter_symbols(req.dict())
     except Exception as e:
+        log.error(f"[API /backtest/filter] 500: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -125,8 +144,10 @@ def filter_stocks(req: FilterRequest):
 @router.get("/kline/{symbol}")
 def kline(symbol: str, timeframe: str = "4h", start: str = "20240101", end: str = "20250601"):
     try:
+        log.info(f"[API /backtest/kline] {symbol} tf={timeframe} range={start}..{end}")
         return backtest_service.get_kline_data(symbol, timeframe, start, end)
     except Exception as e:
+        log.error(f"[API /backtest/kline] 500: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
