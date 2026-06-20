@@ -128,22 +128,10 @@ function drawChart() {
   const dates = data.value.kline.map(k => k.date)
   const kline = data.value.kline
   const closes = kline.map(k => k.close)
-  const kValues = kline.map((k, i) => [i, k.open, k.close, k.low, k.high])
+  // ECharts candlestick data: [open, close, low, high] (4 元组)
+  const kValues = kline.map((k) => [k.open, k.close, k.low, k.high])
 
-  // 主图区(蜡烛 + MA + BOLL) + 副图区(成交量)
-  const grid = visibleIndicators.value.volume
-    ? [
-        { left: 60, right: 30, top: 60, height: '60%' },
-        { left: 60, right: 30, top: '76%', height: '16%' },
-      ]
-    : [{ left: 60, right: 30, top: 60, height: '78%' }]
-
-  const xAxis = visibleIndicators.value.volume
-    ? [
-        { type: 'category', data: dates, gridIndex: 0, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' } },
-        { type: 'category', data: dates, gridIndex: 1, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { show: false } },
-      ]
-    : [{ type: 'category', data: dates, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' } }]
+  const hasVolume = visibleIndicators.value.volume
 
   const series = [{
     name: 'K线', type: 'candlestick', data: kValues,
@@ -164,7 +152,6 @@ function drawChart() {
     const ma = computeMA(closes, parseInt(k.slice(2)))
     series.push({
       name: k.toUpperCase(), type: 'line', data: ma, smooth: true, showSymbol: false,
-      xAxisIndex: 0, yAxisIndex: 0,
       lineStyle: { width: 1.2, color: MA_COLORS[k] }
     })
   }
@@ -173,7 +160,6 @@ function drawChart() {
     const ema = computeEMA(closes, 20)
     series.push({
       name: 'EMA20', type: 'line', data: ema, smooth: true, showSymbol: false,
-      xAxisIndex: 0, yAxisIndex: 0,
       lineStyle: { width: 1.2, color: '#16a085', type: 'dashed' }
     })
   }
@@ -181,17 +167,14 @@ function drawChart() {
   if (visibleIndicators.value.boll) {
     const b = computeBOLL(closes, 20, 2)
     series.push({ name: 'BOLL上轨', type: 'line', data: b.upper, smooth: true, showSymbol: false,
-      xAxisIndex: 0, yAxisIndex: 0,
       lineStyle: { width: 0.8, color: '#8e44ad', opacity: 0.6 } })
     series.push({ name: 'BOLL中轨', type: 'line', data: b.mid, smooth: true, showSymbol: false,
-      xAxisIndex: 0, yAxisIndex: 0,
       lineStyle: { width: 0.8, color: '#8e44ad', opacity: 0.6 } })
     series.push({ name: 'BOLL下轨', type: 'line', data: b.lower, smooth: true, showSymbol: false,
-      xAxisIndex: 0, yAxisIndex: 0,
       lineStyle: { width: 0.8, color: '#8e44ad', opacity: 0.6 } })
   }
-  // 成交量副图 (保留每根 bar 涨跌色)
-  if (visibleIndicators.value.volume) {
+  // 成交量副图
+  if (hasVolume) {
     series.push({
       name: '成交量', type: 'bar',
       data: kline.map((k) => ({
@@ -202,42 +185,31 @@ function drawChart() {
     })
   }
 
-  const yAxis = visibleIndicators.value.volume
-    ? [
-        { scale: true, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' }, splitLine: { lineStyle: { color: '#2b3139' } } },
-        { scale: true, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6', fontSize: 10 }, splitLine: { show: false } },
-      ]
-    : [{ scale: true, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' }, splitLine: { lineStyle: { color: '#2b3139' } } }]
-
-  const dataZoom = visibleIndicators.value.volume
-    ? [
-        { type: 'inside', xAxisIndex: [0, 1] },
-        { type: 'slider', xAxisIndex: [0, 1], height: 20, bottom: 10, backgroundColor: '#181a20' },
-      ]
-    : [
-        { type: 'inside', xAxisIndex: 0 },
-        { type: 'slider', xAxisIndex: 0, height: 20, bottom: 10, backgroundColor: '#181a20' },
-      ]
-
-  c.setOption({
+  const option = {
     backgroundColor: 'transparent',
     title: { text: `${symbol.value} · ${curInfo.value.name_zh || ''} (${timeframe.value})`,
       left: 'center', top: 10, textStyle: { color: '#eaecef', fontSize: 14 } },
     tooltip: {
-      trigger: 'axis', axisPointer: { type: 'cross', link: visibleIndicators.value.volume ? { xAxisIndex: 'all' } : undefined },
-      backgroundColor: '#181a20', borderColor: '#474d57', textStyle: { color: '#eaecef' },
+      trigger: 'axis',
+      axisPointer: { type: 'cross' },
+      backgroundColor: '#181a20',
+      borderColor: '#474d57',
+      textStyle: { color: '#eaecef' },
       formatter: (params) => {
         if (!params || !params.length) return ''
         const candle = params.find(p => p.seriesType === 'candlestick')
         if (!candle) return params.map(p => `${p.marker} ${p.seriesName}: ${p.value}`).join('<br/>')
-        const o = candle.data[1], c = candle.data[2], h = candle.data[4], l = candle.data[3]
+        const d = candle.data || []
+        const o = d[0], c = d[1], l = d[2], h = d[3]
+        if (o == null || c == null) return ''
         const chg = c - o
         const chgPct = (chg / o * 100).toFixed(2)
         const color = chg >= 0 ? '#02c076' : '#f6465d'
         let html = `<b>${candle.axisValueLabel}</b><br/>`
-        html += `开盘 <b>${o.toFixed(2)}</b>　<span style="color:${color}">${chgPct}%</span><br/>`
-        html += `收盘 <b>${c.toFixed(2)}</b><br/>`
-        html += `最高 <b style="color:#02c076">${h.toFixed(2)}</b>　最低 <b style="color:#f6465d">${l.toFixed(2)}</b><br/>`
+        html += `开盘 <b>${(+o).toFixed(2)}</b>　<span style="color:${color}">${chgPct}%</span><br/>`
+        html += `收盘 <b>${(+c).toFixed(2)}</b><br/>`
+        if (h != null) html += `最高 <b style="color:#02c076">${(+h).toFixed(2)}</b>　`
+        if (l != null) html += `最低 <b style="color:#f6465d">${(+l).toFixed(2)}</b><br/>`
         for (const p of params) {
           if (p.seriesType === 'candlestick') continue
           if (p.value == null) continue
@@ -247,8 +219,40 @@ function drawChart() {
       }
     },
     legend: { data: series.map(s => s.name), top: 36, textStyle: { color: '#b7bdc6' } },
-    grid, xAxis, yAxis, series, dataZoom,
-  })
+    grid: hasVolume
+      ? [
+          { left: 60, right: 30, top: 60, height: '60%' },
+          { left: 60, right: 30, top: '76%', height: '16%' },
+        ]
+      : [{ left: 60, right: 30, top: 60, height: '78%' }],
+    xAxis: hasVolume
+      ? [
+          { type: 'category', data: dates, gridIndex: 0 },
+          { type: 'category', data: dates, gridIndex: 1, axisLabel: { show: false } },
+        ]
+      : [{ type: 'category', data: dates }],
+    yAxis: hasVolume
+      ? [
+          { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: '#2b3139' } } },
+          { scale: true, gridIndex: 1, splitLine: { show: false }, axisLabel: { fontSize: 10 } },
+        ]
+      : [{ scale: true, splitLine: { lineStyle: { color: '#2b3139' } } }],
+    series,
+    dataZoom: hasVolume
+      ? [
+          { type: 'inside', xAxisIndex: [0, 1] },
+          { type: 'slider', xAxisIndex: [0, 1], height: 20, bottom: 10, backgroundColor: '#181a20' },
+        ]
+      : [
+          { type: 'inside', xAxisIndex: 0 },
+          { type: 'slider', xAxisIndex: 0, height: 20, bottom: 10, backgroundColor: '#181a20' },
+        ],
+  }
+  try {
+    c.setOption(option)
+  } catch (e) {
+    console.error('[KLine] setOption error:', e)
+  }
 }
 
 function onResize() { chart?.resize() }

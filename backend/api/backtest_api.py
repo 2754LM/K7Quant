@@ -15,6 +15,7 @@ class BacktestRequest(BaseModel):
     strategy_id: int
     symbol: str = "BTCUSDT"
     symbols: Optional[List[str]] = None
+    weights: Optional[dict] = None       # 自定义权重: {symbol: weight}, 留空 = 等权
     timeframe: Optional[str] = None
     ma_short: int = 7
     ma_long: int = 25
@@ -86,11 +87,11 @@ def single(req: BacktestRequest):
 @router.post("/scan")
 def scan(req: BacktestRequest):
     t0 = _time.time()
-    log.info(f"[API /backtest/scan] sid={req.strategy_id} tf={req.timeframe} symbols={len(req.symbols) if req.symbols else 'auto'}")
+    log.info(f"[API /backtest/scan] sid={req.strategy_id} tf={req.timeframe} symbols={len(req.symbols) if req.symbols else 'auto'} weights={'yes' if req.weights else 'no'}")
     try:
         symbols = req.symbols
         result = backtest_service.scan_pool(
-            strategy_id=req.strategy_id, symbols=symbols,
+            strategy_id=req.strategy_id, symbols=symbols, weights=req.weights,
             params=req.dict(), timeframe=req.timeframe,
             start=req.start_date, end=req.end_date,
         )

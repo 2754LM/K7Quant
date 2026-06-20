@@ -162,9 +162,12 @@ def backtest_with_code(symbol: str, code: str, params: dict,
 
 # ============ 池子扫描 ============
 
-def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
-              start: str = None, end: str = None, params: dict = None) -> dict:
-    """对所有币种跑同一策略, 返回排名 + 组合"""
+def scan_pool(strategy_id: int, symbols: list = None, weights: dict = None,
+              timeframe: str = None, start: str = None, end: str = None,
+              params: dict = None) -> dict:
+    """对所有币种跑同一策略, 返回排名 + 组合
+    weights: {symbol: weight}, None 或空 = 等权
+    """
     from backend.storage import crud
     params = params or {}
     import time as _time
@@ -176,7 +179,14 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
 
     if not symbols:
         symbols = _active_symbols()
-    log.info(f"[scan_pool] 开始: sid={strategy_id} tf={timeframe} range={start}..{end} pool={len(symbols)} symbols")
+    # 解析权重: 没填的币种 = 等权(1.0)
+    weights = weights or {}
+    norm_weights = {s: float(weights.get(s, 1.0)) for s in symbols}
+    total_w = sum(norm_weights.values()) or 1.0
+    norm_weights = {s: w / total_w for s, w in norm_weights.items()}
+    weight_label = "等权" if not weights or all(v == 1.0 for v in weights.values()) else "自定义权重"
+
+    log.info(f"[scan_pool] 开始: sid={strategy_id} tf={timeframe} range={start}..{end} pool={len(symbols)} symbols ({weight_label})")
     data = get_many(symbols, timeframe, start, end)
     if not data:
         log.warning(f"[scan_pool] 无数据: pool={len(symbols)}")
@@ -222,7 +232,7 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
     ranking.sort(key=lambda x: x["sharpe"] if x["sharpe"] is not None else -999, reverse=True)
     log.info(f"[scan_pool] 单币回测完成: 成功 {success_count}, 失败 {fail_count}")
 
-    # 组合曲线 (等权平均)
+    # 组合曲线 (按权重加权平均)
     combined_df = pd.DataFrame()
     all_eq = []
     for sym, df in data.items():
@@ -236,12 +246,15 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
                                    "position": position})
             r = bt.run(sig_df, leverage=leverage, position_size=position_size,
                        rebalance_bars=_rebalance_bars(rules))
-            all_eq.append(r.set_index("date")["equity"].rename(sym))
+            # 把单币 equity 乘以权重
+            w = norm_weights.get(sym, 1.0 / len(data))
+            eq_w = r.set_index("date")["equity"] * w
+            all_eq.append(eq_w.rename(sym))
         except Exception:
             continue
     if all_eq:
         tmp = pd.concat(all_eq, axis=1).ffill().bfill()
-        combined_df = pd.DataFrame({"date": tmp.index, "equity": tmp.mean(axis=1).values})
+        combined_df = pd.DataFrame({"date": tmp.index, "equity": tmp.sum(axis=1).values})
         combined_df["ret"] = combined_df["equity"].pct_change().fillna(0)
         combined_df["strategy_ret"] = combined_df["ret"]
 
@@ -249,7 +262,7 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
     chart_b64 = ""
     combined_metrics = {}
     if not combined_df.empty:
-        title = f"币池组合 - {strategy['name']} ({len(data)} 个币种)"
+        title = f"币池组合 - {strategy['name']} ({len(data)} 个币种, {weight_label})"
         chart_b64 = _save_chart(combined_df, bench, title, f"scan_{strategy_id}_{timeframe}")
         combined_metrics = compute_metrics(combined_df, bench, timeframe)
 
@@ -259,7 +272,8 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
     return {
         "ranking": ranking, "count": len(ranking),
         "strategy_id": strategy_id, "strategy_name": strategy["name"],
-        "timeframe": timeframe,
+        "timeframe": timeframe, "weight_mode": weight_label,
+        "weights": norm_weights,
         "combined_metrics": sanitize(combined_metrics),
         "combined_equity": to_records(combined_df),
         "benchmark": to_records(bench.assign(nav=bench["close"] / bench["close"].iloc[0]),

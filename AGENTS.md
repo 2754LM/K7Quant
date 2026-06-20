@@ -287,6 +287,7 @@ python -c "from backend.models import list_symbols, list_strategies; print(len(l
 8. **Naive UI 消息**: 在子组件中需用 `inject('n-message-provider')` 或 `useMessage()` (后者需在 `<n-message-provider>` 内部使用)。简单场景用全局 toast 也行。
 9. **时间格式**: 前后端统一 YYYYMMDD (8 位字符串)。`DateRangePicker` 用 Naive UI 的 `n-date-picker` + 内部转换。
 10. **改了后端要重启**: `pythonw` 启动的进程不会热加载 Python 模块；用 `uvicorn --reload` 开发。
+11. **ECharts 多网格必设 gridIndex**: 当 chart 拆分为多子图（如 K线 + 成交量副图），yAxis 必须显式指定 `gridIndex`（与 xAxis 一致），否则 `dataProcessor.reset` 会因轴-网格关联错位而崩溃。见 `KLine.vue:drawChart`。
 
 ## 安全须知 (重要)
 

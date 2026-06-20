@@ -23,6 +23,7 @@ const params = ref({
   strategy_id: null,
   timeframe: '4h',
   symbols: null,         // null = 使用全部活跃币种
+  weights: null,         // null = 等权; {symbol: weight} = 自定义权重
   ma_short: 7, ma_long: 25,
   top_n: 3, hold: 12, lookback: 24,
   rsi_period: 14, rsi_oversold: 30, rsi_overbought: 70,
@@ -79,6 +80,73 @@ function selectAllFromList() {
 }
 function clearPoolSelection() { poolSelection.value = new Set() }
 
+// ---------- 持仓权重 ----------
+const weightMode = ref('equal')  // 'equal' | 'custom'
+const weights = ref({})          // {symbol: weight}
+const weightOpen = ref(false)
+function effectivePoolSymbols() {
+  if (poolMode.value === 'all') return allActiveSymbols.value
+  return Array.from(poolSelection.value)
+}
+const weightTotal = computed(() => {
+  const syms = effectivePoolSymbols()
+  if (weightMode.value === 'equal') return syms.length
+  return syms.reduce((s, x) => s + (Number(weights.value[x]) || 0), 0)
+})
+const weightValid = computed(() => {
+  const syms = effectivePoolSymbols()
+  if (syms.length === 0) return false
+  if (weightMode.value === 'equal') return true
+  return weightTotal.value > 0
+})
+function normalizeWeights() {
+  // 把权重归一化到 sum=1 (后端会再归一化一次, 这里只是预览用)
+  const syms = effectivePoolSymbols()
+  if (weightMode.value === 'equal' || weightTotal.value === 0) {
+    const eq = syms.length ? 1 / syms.length : 0
+    const obj = {}
+    for (const s of syms) obj[s] = eq
+    return obj
+  }
+  const obj = {}
+  for (const s of syms) obj[s] = (Number(weights.value[s]) || 0) / weightTotal.value
+  return obj
+}
+function distributeEqual() {
+  // 把当前权重全部设为 1, 后端归一化后 = 等权
+  const syms = effectivePoolSymbols()
+  for (const s of syms) weights.value[s] = 1
+}
+function setWeight(sym, v) {
+  const n = Number(v)
+  if (isNaN(n) || n < 0) weights.value[sym] = 0
+  else weights.value[sym] = n
+}
+function presetByCap() {
+  // 按市值大致分: 主流币权重大, 长尾小 (示例: BTC 4, ETH 3, 其他 1)
+  const syms = effectivePoolSymbols()
+  for (const s of syms) {
+    if (s === 'BTCUSDT') weights.value[s] = 4
+    else if (s === 'ETHUSDT') weights.value[s] = 3
+    else weights.value[s] = 1
+  }
+}
+
+// 把 weights 同步给 params
+watch([weightMode, weights, () => Array.from(poolSelection.value).join(','), poolMode], () => {
+  if (weightMode.value === 'equal') {
+    params.value.weights = null
+  } else {
+    const syms = effectivePoolSymbols()
+    const obj = {}
+    for (const s of syms) {
+      const w = Number(weights.value[s])
+      if (w > 0) obj[s] = w
+    }
+    params.value.weights = Object.keys(obj).length ? obj : null
+  }
+}, { deep: true, immediate: true })
+
 const result = ref(null)
 const loading = ref(false)
 const error = ref('')
@@ -110,7 +178,12 @@ watch(() => params.value.strategy_id, () => {
   run()
 }, { immediate: false })
 
-watch([() => params.value.start_date, () => params.value.end_date, () => params.value.timeframe], () => {
+watch([
+  () => params.value.start_date,
+  () => params.value.end_date,
+  () => params.value.timeframe,
+  () => params.value.symbols,
+], () => {
   if (tfMode.value === 'single') run()
 })
 
@@ -422,7 +495,7 @@ function drawChart() {
   }
   c.setOption({
     backgroundColor: 'transparent',
-    title: { text: `币池组合 (${result.value.count} 个币种 · ${result.value.timeframe})`,
+    title: { text: `币池组合 (${result.value.count} 个币种 · ${result.value.timeframe}${result.value.weight_mode && result.value.weight_mode !== '等权' ? ' · ' + result.value.weight_mode : ''})`,
       left: 'center', textStyle: { color: '#eaecef', fontSize: 14 } },
     tooltip: { trigger: 'axis', backgroundColor: '#181a20', borderColor: '#2b3139',
       textStyle: { color: '#eaecef' }, valueFormatter: v => (v * 100).toFixed(2) + '%' },
@@ -544,6 +617,45 @@ function drawMultiChart() {
                   </label>
                   <div v-if="!filteredPoolList.length" class="pool-empty">未找到币种</div>
                 </div>
+              </div>
+            </transition>
+          </div>
+        </div>
+        <!-- 持仓权重 -->
+        <div class="cfg weight-cfg" v-if="effectivePoolCount > 0">
+          <label>持仓权重 <span class="weight-hint" v-if="weightMode === 'custom'">Σ={{ weightTotal.toFixed(2) }} → 归一化</span></label>
+          <div class="weight-picker">
+            <button class="pool-toggle" :class="{ active: weightMode === 'equal' }"
+              @click="weightMode = 'equal'" title="每个币种仓位相等">等权</button>
+            <button class="pool-toggle" :class="{ active: weightMode === 'custom' }"
+              @click="weightMode = 'custom'; weightOpen = true" title="为每个币种设置不同权重">自定义</button>
+            <button v-if="weightMode === 'custom'" class="pool-edit"
+              @click="weightOpen = !weightOpen" :title="weightOpen ? '收起权重编辑' : '编辑权重'">
+              {{ weightOpen ? '收起' : '编辑' }}
+            </button>
+            <transition name="slide">
+              <div v-if="weightMode === 'custom' && weightOpen" class="weight-panel">
+                <div class="weight-tools">
+                  <button class="pool-mini" @click="distributeEqual" title="全部设为 1 (后端会归一化)">全部 = 1</button>
+                  <button class="pool-mini" @click="presetByCap" title="BTC 4 / ETH 3 / 其他 1">按市值预设</button>
+                  <span class="pool-hint">当前共 {{ effectivePoolCount }} 个币种, 总权重 {{ weightTotal.toFixed(2) }}</span>
+                </div>
+                <div class="weight-list">
+                  <div v-for="sym in effectivePoolSymbols()" :key="sym" class="weight-row">
+                    <span class="weight-sym">{{ sym }}</span>
+                    <input type="number" min="0" step="0.1"
+                      :value="weights[sym] ?? 1"
+                      @input="setWeight(sym, $event.target.value)"
+                      class="weight-input" />
+                    <span class="weight-bar-wrap">
+                      <span class="weight-bar"
+                        :style="{ width: (normalizeWeights()[sym] * 100 || 0) + '%' }"></span>
+                    </span>
+                    <span class="weight-pct">{{ (normalizeWeights()[sym] * 100 || 0).toFixed(1) }}%</span>
+                  </div>
+                  <div v-if="!effectivePoolCount" class="pool-empty">请先选择币池</div>
+                </div>
+                <div v-if="!weightValid" class="weight-warn">⚠ 权重总和为 0, 请至少设置一个币种</div>
               </div>
             </transition>
           </div>
@@ -1001,6 +1113,98 @@ function drawMultiChart() {
   padding: 20px;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+/* 权重编辑 */
+.weight-cfg { min-width: 240px; }
+.weight-hint { color: var(--yellow); font-family: 'Consolas', monospace; font-size: 10px; font-weight: normal; margin-left: 4px; }
+.weight-picker { display: flex; flex-direction: column; gap: 6px; position: relative; }
+.weight-panel {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 50;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  width: 480px;
+  max-width: 90vw;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  margin-top: 4px;
+}
+.weight-tools {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.weight-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.weight-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.weight-row:hover { border-color: var(--yellow); }
+.weight-sym {
+  font-family: 'Consolas', monospace;
+  font-weight: 600;
+  min-width: 90px;
+  color: var(--text);
+}
+.weight-input {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'Consolas', monospace;
+  width: 70px;
+  outline: none;
+}
+.weight-input:focus { border-color: var(--yellow); }
+.weight-bar-wrap {
+  flex: 1;
+  height: 6px;
+  background: var(--bg-elevated);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+.weight-bar {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--yellow) 0%, rgba(240,185,11,0.5) 100%);
+  transition: width 0.15s;
+}
+.weight-pct {
+  font-family: 'Consolas', monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 48px;
+  text-align: right;
+}
+.weight-warn {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(246,70,93,0.1);
+  border: 1px solid var(--red);
+  color: var(--red);
+  border-radius: 4px;
+  font-size: 11px;
 }
 .metrics-grid {
   display: grid;
