@@ -12,4 +12,6 @@ def get_full_config() -> dict:
         "settings": settings,
         "symbols": symbols,
         "strategies": strategies,
+        "timeframes": settings.get("timeframes", []),
+        "active_symbols": [s["symbol"] for s in symbols if s.get("is_active")],
     }

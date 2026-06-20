@@ -85,7 +85,7 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
         </div>
         <div class="form-row">
           <label>K线</label>
-          <TimeframePicker :timeframes="timeframes" v-model="params.timeframe" />
+          <TimeframePicker v-model="params.timeframe" />
         </div>
         <div class="form-row">
           <label>区间最低涨幅</label>

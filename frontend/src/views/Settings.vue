@@ -24,10 +24,11 @@ const tabs = [
 ]
 
 onMounted(() => {
-  bt.value = { ...cfg.value.backtest }
-  ds.value = { ...cfg.value.data_source, proxy: { ...(cfg.value.data_source.proxy || {}) } }
-  ui.value = { ...cfg.value.ui }
-  tr.value = { ...cfg.value.trading }
+  const s = (cfg.value && cfg.value.settings) || {}
+  bt.value = { ...(s.backtest || {}) }
+  ds.value = { ...(s.data_source || {}), proxy: { ...((s.data_source || {}).proxy || {}) } }
+  ui.value = { ...(s.ui || {}) }
+  tr.value = { ...(s.trading || {}) }
 })
 
 async function showMsg(text, isErr = false) {
@@ -116,6 +117,11 @@ onMounted(() => {
         <div class="form-row">
           <label>滑点 (估算)</label>
           <input type="number" v-model.number="bt.slippage" step="0.0001" />
+        </div>
+        <div class="form-row">
+          <label>调仓频率 (每 N 根换仓)</label>
+          <input type="number" v-model.number="bt.rebalance_bars" min="1" step="1" />
+          <span class="hint">1=每根都可换仓; N=每 N 根才换一次 (降频)</span>
         </div>
         <div class="form-row">
           <label>仓位模式</label>
@@ -241,7 +247,7 @@ onMounted(() => {
         <p><strong>数据源:</strong> {{ cfg?.data_source?.exchange }} ({{ cfg?.data_source?.api_base }})</p>
         <p><strong>币种池:</strong> {{ cfg?.symbols?.length || 0 }} 个</p>
         <p><strong>内置策略:</strong> {{ cfg?.strategies?.length || 0 }} 个</p>
-        <p><strong>配置文件:</strong> <code>config/settings.yaml</code></p>
+        <p><strong>配置文件:</strong> <code>config.yaml</code></p>
         <p><strong>GitHub:</strong> <a href="https://github.com/2754LM/K7Quant" target="_blank">https://github.com/2754LM/K7Quant</a></p>
       </div>
     </div>

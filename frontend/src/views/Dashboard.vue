@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
-import { scanPool, runBacktest, backtestCode, validateStrategyCode } from '../api'
+import { scanPool, runBacktest, backtestCode, validateStrategyCode, createStrategy } from '../api'
 import * as echarts from 'echarts'
 
 import MetricCard from '../components/MetricCard.vue'
@@ -135,6 +135,62 @@ function toggleCodePanel() {
         .then(r => codeValidation.value = r.data)
         .catch(e => codeValidation.value = { ok: false, error: e.message })
     }
+  }
+}
+
+const saveDialogOpen = ref(false)
+const saveForm = ref({ name: '', description: '', category: 'custom' })
+const saving = ref(false)
+const saveError = ref('')
+const saveSuccess = ref('')
+
+function openSaveDialog() {
+  if (!codeValidation.value?.ok) {
+    saveError.value = '代码语法不正确, 无法保存'
+    return
+  }
+  // 默认名: 从已有策略名 + 自定义标记
+  const baseName = activeStrategy.value?.name || '自定义策略'
+  saveForm.value = {
+    name: `${baseName}-自定义`,
+    description: codeValidation.value?.rules?.signal ? `signal: ${codeValidation.value.rules.signal}` : '',
+    category: 'custom',
+  }
+  saveError.value = ''
+  saveSuccess.value = ''
+  saveDialogOpen.value = true
+}
+
+async function confirmSave() {
+  if (!saveForm.value.name.trim()) {
+    saveError.value = '请输入策略名'
+    return
+  }
+  saving.value = true
+  saveError.value = ''
+  try {
+    const res = await createStrategy({
+      name: saveForm.value.name.trim(),
+      description: saveForm.value.description.trim(),
+      category: saveForm.value.category,
+      code: codeForm.value.code,
+      params_schema: {},
+    })
+    if (res.data?.error) {
+      saveError.value = res.data.error
+    } else {
+      saveSuccess.value = `✓ 已保存: ${saveForm.value.name}`
+      // 刷新策略列表
+      if (reloadCfg) await reloadCfg()
+      setTimeout(() => {
+        saveDialogOpen.value = false
+        saveSuccess.value = ''
+      }, 1500)
+    }
+  } catch (e) {
+    saveError.value = e.message
+  } finally {
+    saving.value = false
   }
 }
 
@@ -355,7 +411,7 @@ function drawMultiChart() {
         <button :class="{ active: tfMode === 'multi' }" @click="tfMode = 'multi'">多周期对比</button>
       </div>
       <template v-if="tfMode === 'single'">
-        <TimeframePicker :timeframes="timeframes" v-model="params.timeframe" @change="run" />
+        <TimeframePicker v-model="params.timeframe" @change="run" />
       </template>
       <template v-else>
         <div class="multi-tf">
@@ -401,14 +457,18 @@ function drawMultiChart() {
               </div>
               <div class="form-group">
                 <label>K线</label>
-                <TimeframePicker :timeframes="timeframes" v-model="codeForm.timeframe" />
+                <TimeframePicker v-model="codeForm.timeframe" />
               </div>
               <div class="form-group">
                 <label>区间</label>
                 <DateRangePicker v-model:start="codeForm.start_date" v-model:end="codeForm.end_date" default-range="3m" />
               </div>
-              <button class="btn-primary" :disabled="codeLoading" @click="runCode">
+              <button class="btn-primary" :disabled="codeLoading || !codeValidation?.ok" @click="runCode" :title="!codeValidation?.ok ? '请先修正代码语法' : ''">
                 {{ codeLoading ? '运行中...' : '▶ 运行回测' }}
+              </button>
+              <button class="btn-secondary" :disabled="!codeValidation?.ok || saving" @click="openSaveDialog"
+                :title="!codeValidation?.ok ? '请先修正代码语法' : '保存为新策略'">
+                💾 保存为策略
               </button>
             </div>
           </div>
@@ -555,6 +615,55 @@ function drawMultiChart() {
           </div>
         </div>
       </template>
+
+      <!-- 保存策略对话框 -->
+      <div v-if="saveDialogOpen" class="modal-mask" @click.self="saveDialogOpen = false">
+        <div class="modal">
+          <div class="modal-head">
+            <h3>💾 保存为新策略</h3>
+            <button class="modal-close" @click="saveDialogOpen = false">×</button>
+          </div>
+          <div class="modal-body">
+            <div v-if="saveSuccess" class="success-msg">{{ saveSuccess }}</div>
+            <div class="form-row">
+              <div class="form-group grow">
+                <label>策略名 *</label>
+                <input type="text" v-model="saveForm.name" placeholder="输入策略名" />
+              </div>
+              <div class="form-group">
+                <label>分类</label>
+                <select v-model="saveForm.category">
+                  <option value="custom">自定义</option>
+                  <option value="trend">趋势</option>
+                  <option value="mean_reversion">均值回归</option>
+                  <option value="momentum">动量</option>
+                  <option value="breakout">突破</option>
+                  <option value="volume">成交量</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group grow">
+                <label>说明</label>
+                <input type="text" v-model="saveForm.description" placeholder="一句话描述这个策略" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group grow">
+                <label>代码预览</label>
+                <pre class="code-preview">{{ codeForm.code }}</pre>
+              </div>
+            </div>
+            <div v-if="saveError" class="error-msg">{{ saveError }}</div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn-secondary" @click="saveDialogOpen = false">取消</button>
+            <button class="btn-primary" :disabled="saving || !saveForm.name.trim()" @click="confirmSave">
+              {{ saving ? '保存中...' : '保存' }}
+            </button>
+          </div>
+        </div>
+      </div>
   </div>
 </template>
 
@@ -756,6 +865,88 @@ tr:hover td { background: var(--bg-elevated); }
 .code-result-card h4 { font-size: 14px; margin-bottom: 8px; color: var(--text-secondary); }
 .slide-enter-active, .slide-leave-active { transition: opacity 0.2s, transform 0.2s; overflow: hidden; }
 .slide-enter-from, .slide-leave-to { opacity: 0; transform: translateY(-8px); }
+
+/* 模态框 */
+.modal-mask {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 100%; max-width: 640px;
+  max-height: 90vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h3 { font-size: 16px; }
+.modal-close {
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 24px;
+  padding: 0 8px;
+  line-height: 1;
+}
+.modal-close:hover { color: var(--red); }
+.modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+.modal-body .form-row {
+  display: flex; gap: 12px; margin-bottom: 12px;
+}
+.modal-body .form-group { display: flex; flex-direction: column; gap: 4px; }
+.modal-body .form-group.grow { flex: 1; }
+.modal-body .form-group label { font-size: 12px; color: var(--text-secondary); }
+.modal-body .form-group input, .modal-body .form-group select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.modal-body .form-group input:focus, .modal-body .form-group select:focus { border-color: var(--yellow); outline: none; }
+.code-preview {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--yellow);
+  font-family: 'Consolas', monospace;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.modal-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+.success-msg {
+  background: rgba(2,192,118,0.1);
+  border: 1px solid var(--green);
+  color: var(--green);
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.error-msg {
+  background: rgba(246,70,93,0.1);
+  border: 1px solid var(--red);
+  color: var(--red);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  margin-top: 8px;
+}
 
 .code-card {
   background: var(--bg-card);

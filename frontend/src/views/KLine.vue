@@ -45,6 +45,16 @@ watch([symbol, timeframe], () => load(), { immediate: true })
 watch(visibleIndicators, () => drawChart(), { deep: true })
 watch([startDate, endDate], () => load())
 
+function getOrInitChart(elId) {
+  const el = document.getElementById(elId)
+  if (!el) return null
+  if (!chart || chart.getDom() !== el) {
+    if (chart) { try { chart.dispose() } catch (e) {} }
+    chart = echarts.init(el, null, { renderer: 'canvas' })
+  }
+  return chart
+}
+
 async function load() {
   if (!startDate.value || !endDate.value) return
   loading.value = true
@@ -112,9 +122,8 @@ function computeBOLL(closes, n = 20, k = 2) {
 
 function drawChart() {
   if (!data.value?.kline?.length) return
-  const el = document.getElementById('kline-chart')
-  if (!el) return
-  if (!chart) chart = echarts.init(el, null, { renderer: 'canvas' })
+  const c = getOrInitChart('kline-chart')
+  if (!c) return
   const dates = data.value.kline.map(k => k.date)
   const kline = data.value.kline
   const closes = kline.map(k => k.close)
@@ -210,7 +219,7 @@ function drawChart() {
         { type: 'slider', xAxisIndex: 0, height: 20, bottom: 10, backgroundColor: '#181a20' },
       ]
 
-  chart.setOption({
+  c.setOption({
     backgroundColor: 'transparent',
     title: { text: `${symbol.value} · ${curInfo.value.name_zh || ''} (${timeframe.value})`,
       left: 'center', top: 10, textStyle: { color: '#eaecef', fontSize: 14 } },
@@ -276,10 +285,14 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
             {{ s }} {{ symbolInfo[s]?.name_zh || '' }}
           </option>
         </select>
-        <TimeframePicker :timeframes="timeframes" v-model="timeframe" />
+        <TimeframePicker v-model="timeframe" />
         <DateRangePicker v-model:start="startDate" v-model:end="endDate" default-range="3m" />
       </div>
       <div class="toolbar-right">
+        <span v-if="loading" class="loading-spinner">⏳ 加载中...</span>
+        <button class="refresh-btn" @click="load" :disabled="loading" :title="loading ? '加载中...' : '刷新数据'">
+          🔄 {{ loading ? '加载中' : '刷新' }}
+        </button>
         <button :class="{ active: tableView === 'chart' }" @click="tableView = 'chart'">K线图</button>
         <button :class="{ active: tableView === 'table' }" @click="tableView = 'table'">数据表</button>
       </div>
@@ -313,7 +326,13 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
         <span class="sep">|</span>
         <label><input type="checkbox" v-model="visibleIndicators.volume" /> 成交量</label>
       </div>
-      <div id="kline-chart"></div>
+      <div class="chart-wrap" :class="{ loading: loading }">
+        <div id="kline-chart"></div>
+        <div v-if="loading" class="chart-overlay">
+          <div class="spinner"></div>
+          <span>正在获取 K 线数据...</span>
+        </div>
+      </div>
     </div>
 
     <div v-else class="table-area">
@@ -469,6 +488,35 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
 .indicator-toggles label:hover { color: var(--text); }
 .indicator-toggles input[type="checkbox"] { accent-color: var(--yellow); }
 #kline-chart { height: 500px; }
+.chart-wrap { position: relative; }
+.chart-wrap.loading { opacity: 0.5; transition: opacity 0.2s; }
+.chart-overlay {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px;
+  color: var(--yellow);
+  font-size: 13px;
+  pointer-events: none;
+}
+.spinner {
+  width: 32px; height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--yellow);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-spinner { color: var(--yellow); font-size: 12px; }
+.refresh-btn {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.refresh-btn:hover:not(:disabled) { border-color: var(--yellow); color: var(--yellow); }
+.refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .table-area {
   max-height: 600px;
   overflow: auto;

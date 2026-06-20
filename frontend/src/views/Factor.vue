@@ -32,9 +32,21 @@ const corrFactors = ref([])
 const corrFactorsStr = ref('rsi,macd_hist,obv')
 const corrPeriod = ref(60)
 
+// 全部因子视图: 选中币种后并行算所有因子
+const allFactorsResult = ref(null)
+const allFactorsLoading = ref(false)
+const allFactorsError = ref('')
+
 watch(corrFactorsStr, (v) => {
   corrFactors.value = v.split(/[,\s]+/).filter(Boolean)
 })
+
+function toggleCorrFactor(fid) {
+  const i = corrFactors.value.indexOf(fid)
+  if (i >= 0) corrFactors.value.splice(i, 1)
+  else corrFactors.value.push(fid)
+  corrFactorsStr.value = corrFactors.value.join(',')
+}
 
 // ---- 自定义规则 (落库 custom_rules) ----
 const savedRules = ref([])
@@ -77,6 +89,16 @@ const allSymbols = computed(() => {
 })
 
 const timeframes = computed(() => cfg.value?.timeframes || ['1d'])
+
+// 用于多因子相关性的选择列表: 全部因子按 category 分组
+const allFactorChips = computed(() => {
+  const out = []
+  for (const cat of factorList.value.categories || []) {
+    const fs = factorList.value.factors.filter(f => f.category === cat)
+    if (fs.length) out.push({ category: cat, factors: fs })
+  }
+  return out
+})
 
 async function loadFactorList() {
   const res = await listFactors()
@@ -220,6 +242,34 @@ async function computeRank() {
   }
 }
 
+// 全部因子 (单币种并行计算所有因子)
+async function computeAllFactors() {
+  if (!factorList.value.factors.length) return
+  allFactorsLoading.value = true
+  allFactorsError.value = ''
+  allFactorsResult.value = null
+  try {
+    const factors = factorList.value.factors
+    const results = await Promise.allSettled(
+      factors.map(f => computeFactor({
+        symbol: symbol.value, factor_id: f.id,
+        params: f.params_schema ? Object.fromEntries(
+          Object.entries(f.params_schema).map(([k, s]) => [k, s.default])
+        ) : {},
+        timeframe: timeframe.value, start: start.value, end: end.value,
+      }).then(r => ({ factor: f, data: r.data }))
+        .catch(e => ({ factor: f, error: e.message })))
+    )
+    allFactorsResult.value = results
+      .filter(r => r.status === 'fulfilled')
+      .map(r => r.value)
+  } catch (e) {
+    allFactorsError.value = e.message
+  } finally {
+    allFactorsLoading.value = false
+  }
+}
+
 function drawRank() {
   const el = document.getElementById('rank-chart')
   if (!el || !rankResult.value) return
@@ -255,7 +305,8 @@ loadRules()
 <template>
   <div class="factor-page">
     <div class="tabs">
-      <button :class="{ active: tab === 'compute' }" @click="tab = 'compute'">单因子查询</button>
+      <button :class="{ active: tab === 'all' }" @click="tab = 'all'">📊 全部因子</button>
+      <button :class="{ active: tab === 'compute' }" @click="tab = 'compute'">单因子</button>
       <button :class="{ active: tab === 'cross' }" @click="tab = 'cross'">多因子相关性</button>
       <button :class="{ active: tab === 'rank' }" @click="tab = 'rank'">跨币种排名</button>
     </div>
@@ -279,7 +330,7 @@ loadRules()
         </div>
         <div class="form-group">
           <label>K线</label>
-          <TimeframePicker :timeframes="timeframes" v-model="timeframe" />
+          <TimeframePicker v-model="timeframe" />
         </div>
         <div class="form-group" style="grid-column: span 2; min-width: 360px">
           <label>日期区间</label>
@@ -313,26 +364,35 @@ loadRules()
     <div v-if="tab === 'cross'" class="card">
       <div class="form-row">
         <div class="form-group grow">
-          <label>选择 2+ 个因子 (逗号或回车分隔)</label>
-          <input type="text" v-model="corrFactorsStr"
-            placeholder="rsi,macd_hist,obv" @keyup.enter="computeCross" />
+          <label>币种</label>
+          <input type="text" v-model="symbol" />
         </div>
         <div class="form-group">
           <label>回看 K 线数</label>
           <input type="number" v-model.number="corrPeriod" />
         </div>
-        <div class="form-group">
-          <label>币种</label>
-          <input type="text" v-model="symbol" />
-        </div>
-        <button class="btn-primary" @click="computeCross" :disabled="corrLoading">
+        <button class="btn-primary" @click="computeCross" :disabled="corrLoading || corrFactors.length < 2">
           {{ corrLoading ? '计算中...' : '计算相关性' }}
         </button>
       </div>
+      <div class="factor-picker">
+        <div v-for="g in allFactorChips" :key="g.category" class="fp-group">
+          <div class="fp-cat">{{ g.category }}</div>
+          <div class="fp-chips">
+            <button v-for="f in g.factors" :key="f.id"
+              :class="['fp-chip', { active: corrFactors.includes(f.id) }]"
+              @click="toggleCorrFactor(f.id)"
+              :title="f.description">
+              {{ f.name_zh }}
+            </button>
+          </div>
+        </div>
+      </div>
       <div v-if="corrFactors.length" class="chip-row">
+        <span class="hint">已选: </span>
         <span v-for="f in corrFactors" :key="f" class="chip">
-          {{ f }}
-          <button @click="corrFactors = corrFactors.filter(x => x !== f)">×</button>
+          {{ factorList.factors.find(x => x.id === f)?.name_zh || f }}
+          <button @click="toggleCorrFactor(f)">×</button>
         </span>
       </div>
       <div class="rules-bar">
@@ -362,6 +422,45 @@ loadRules()
         </button>
       </div>
       <div v-if="rankResult" id="rank-chart" class="chart-large"></div>
+    </div>
+
+    <!-- 全部因子 (单币种) -->
+    <div v-if="tab === 'all'" class="card">
+      <div class="form-row">
+        <div class="form-group">
+          <label>币种</label>
+          <input type="text" v-model="symbol" />
+        </div>
+        <div class="form-group">
+          <label>K线</label>
+          <TimeframePicker v-model="timeframe" />
+        </div>
+        <div class="form-group" style="grid-column: span 2; min-width: 360px">
+          <label>日期区间</label>
+          <DateRangePicker v-model:start="start" v-model:end="end" default-range="3m" />
+        </div>
+        <button class="btn-primary" @click="computeAllFactors" :disabled="allFactorsLoading">
+          {{ allFactorsLoading ? '计算中...' : '▶ 计算全部' }}
+        </button>
+      </div>
+      <div v-if="allFactorsResult?.length" class="all-factors-grid">
+        <div v-for="r in allFactorsResult" :key="r.factor.id" class="factor-card">
+          <div class="fc-head">
+            <span class="fc-name">{{ r.factor.name_zh }}</span>
+            <span class="fc-id">{{ r.factor.id }}</span>
+            <span v-if="r.error" class="fc-err" :title="r.error">✗</span>
+          </div>
+          <div v-if="r.data && !r.error" class="fc-stats">
+            <div class="fc-stat"><span class="lbl">当前</span><span class="val">{{ fmt(r.data.summary?.current) }}</span></div>
+            <div class="fc-stat"><span class="lbl">最小</span><span class="val">{{ fmt(r.data.summary?.min) }}</span></div>
+            <div class="fc-stat"><span class="lbl">最大</span><span class="val">{{ fmt(r.data.summary?.max) }}</span></div>
+            <div class="fc-stat"><span class="lbl">均值</span><span class="val">{{ fmt(r.data.summary?.mean) }}</span></div>
+          </div>
+          <div v-if="r.error" class="fc-error">{{ r.error }}</div>
+          <div v-if="r.data && !r.error" class="fc-desc">{{ r.factor.description }}</div>
+        </div>
+      </div>
+      <StateView :loading="allFactorsLoading" :error="allFactorsError" empty-text="选币种，点计算查看所有因子" empty-icon="📊" v-if="!allFactorsResult && !allFactorsLoading && !allFactorsError" />
     </div>
   </div>
 </template>
@@ -457,4 +556,82 @@ loadRules()
 .rule-chip .rule-name { cursor: pointer; color: var(--text); }
 .rule-chip .rule-name:hover { color: var(--yellow); }
 .rule-chip button { background: transparent; color: var(--red); padding: 0 2px; font-size: 13px; }
+
+/* 全部因子网格 */
+.all-factors-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.factor-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  transition: border-color 0.2s;
+}
+.factor-card:hover { border-color: var(--yellow); }
+.fc-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.fc-name { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; }
+.fc-id { font-size: 10px; color: var(--text-muted); font-family: 'Consolas', monospace; }
+.fc-err { color: var(--red); font-size: 14px; }
+.fc-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.fc-stat { display: flex; flex-direction: column; gap: 1px; }
+.fc-stat .lbl { font-size: 10px; color: var(--text-muted); }
+.fc-stat .val { font-size: 13px; font-family: 'Consolas', monospace; color: var(--yellow); font-weight: 600; }
+.fc-desc { font-size: 11px; color: var(--text-secondary); line-height: 1.4; }
+.fc-error { font-size: 11px; color: var(--red); }
+
+/* 因子选择器 (多因子相关性) */
+.factor-picker {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.fp-group { margin-bottom: 10px; }
+.fp-group:last-child { margin-bottom: 0; }
+.fp-cat {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.fp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.fp-chip {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 14px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s;
+}
+.fp-chip:hover { border-color: var(--yellow); color: var(--text); }
+.fp-chip.active {
+  background: var(--yellow);
+  color: #000;
+  border-color: var(--yellow);
+  font-weight: 600;
+}
 </style>

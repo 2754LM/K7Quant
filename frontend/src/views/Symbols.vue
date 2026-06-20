@@ -190,6 +190,7 @@ onMounted(() => {
   text-align: left;
   cursor: pointer;
   transition: all 0.2s;
+  color: var(--text);
 }
 .sym-btn:hover { border-color: var(--yellow); }
 .sym-btn.active {
@@ -208,8 +209,8 @@ onMounted(() => {
   font-family: 'Consolas', monospace;
 }
 .sym-top .check { color: var(--yellow); font-size: 14px; font-weight: 700; }
-.sym-name { font-size: 14px; font-weight: 600; }
-.sym-code { font-size: 11px; color: var(--yellow); font-family: 'Consolas', monospace; margin: 2px 0 4px; }
+.sym-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.sym-code { font-size: 11px; color: var(--yellow); font-family: 'Consolas', monospace; margin: 2px 0 4px; font-weight: 600; }
 .sym-cat {
   font-size: 10px;
   color: var(--text-secondary);

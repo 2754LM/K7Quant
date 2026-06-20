@@ -1,6 +1,6 @@
 <script setup>
-import { ref, onMounted, provide } from 'vue'
-import { getConfig } from './api'
+import { ref, computed, onMounted, provide } from 'vue'
+import { getConfig, listSymbols, getStrategies } from './api'
 import Dashboard from './views/Dashboard.vue'
 import KLine from './views/KLine.vue'
 import Filter from './views/Filter.vue'
@@ -12,13 +12,51 @@ import Settings from './views/Settings.vue'
 import Trade from './views/Trade.vue'
 import Learn from './views/Learn.vue'
 
-const activeTab = ref('dashboard')
 const cfg = ref(null)
+const symbolCount = ref(0)
+const strategyCount = ref(0)
+
+// 可扩展 Tab 注册表: 新增页面只需往这里 push 一行 (id/label/组件/是否需要 cfg/reload)
+const TABS = [
+  { id: 'dashboard', label: '🎯 智能回测', comp: Dashboard, needsCfg: true },
+  { id: 'kline', label: '📊 K线数据', comp: KLine, needsCfg: true },
+  { id: 'factor', label: '🔬 因子', comp: Factor, needsCfg: true },
+  { id: 'filter', label: '🔍 币种筛选', comp: Filter, needsCfg: true },
+  { id: 'symbols', label: '💎 币种库', comp: Symbols, needsCfg: true, needsReload: true },
+  { id: 'strategy', label: '🛠️ 自写策略', comp: Strategy, needsCfg: true },
+  { id: 'data', label: '💾 数据', comp: DataPanel },
+  { id: 'trade', label: '📈 模拟/实盘', comp: Trade },
+  { id: 'settings', label: '⚙️ 设置', comp: Settings, needsCfg: true, needsReload: true },
+  { id: 'learn', label: '📚 课堂', comp: Learn, needsCfg: true },
+]
+
+const activeTab = ref('dashboard')
+const active = computed(() => TABS.find(t => t.id === activeTab.value) || TABS[0])
+const ready = computed(() => !active.value.needsCfg || !!cfg.value)
+const activeProps = computed(() => {
+  const p = {}
+  if (active.value.needsCfg) p.cfg = cfg.value
+  if (active.value.needsReload) p.reload = reloadCfg
+  return p
+})
+
+function applyUi() {
+  // 启动即按用户偏好套用主题/问号提示, 不再依赖打开"设置"页才生效
+  const settings = (cfg.value && cfg.value.settings) || {}
+  const ui = settings.ui || {}
+  document.documentElement.setAttribute('data-theme', ui.theme || 'dark')
+  document.documentElement.setAttribute('data-show-tooltips', String(ui.show_help_tooltips ?? true))
+}
 
 async function reloadCfg() {
   try {
     const res = await getConfig()
     cfg.value = res.data
+    applyUi()
+    // 头部统计 (config 接口不含数量, 单独取)
+    const [syms, strats] = await Promise.all([listSymbols(), getStrategies()])
+    symbolCount.value = syms.data.symbols.length
+    strategyCount.value = strats.data.strategies.length
   } catch (e) {
     console.error(e)
   }
@@ -37,39 +75,23 @@ onMounted(reloadCfg)
         <span class="logo-icon">⚡</span>
         <div class="logo-text">
           <div class="title">K7Quant</div>
-          <div class="subtitle">币安量化回测系统 v3.0</div>
+          <div class="subtitle">币安量化回测系统 v4.0</div>
         </div>
       </div>
       <nav class="nav">
-        <button :class="{ active: activeTab === 'dashboard' }" @click="activeTab = 'dashboard'">🎯 智能回测</button>
-        <button :class="{ active: activeTab === 'kline' }" @click="activeTab = 'kline'">📊 K线数据</button>
-        <button :class="{ active: activeTab === 'factor' }" @click="activeTab = 'factor'">🔬 因子</button>
-        <button :class="{ active: activeTab === 'filter' }" @click="activeTab = 'filter'">🔍 币种筛选</button>
-        <button :class="{ active: activeTab === 'symbols' }" @click="activeTab = 'symbols'">💎 币种库</button>
-        <button :class="{ active: activeTab === 'strategy' }" @click="activeTab = 'strategy'">🛠️ 自写策略</button>
-        <button :class="{ active: activeTab === 'data' }" @click="activeTab = 'data'">💾 数据</button>
-        <button :class="{ active: activeTab === 'trade' }" @click="activeTab = 'trade'">📈 模拟/实盘</button>
-        <button :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">⚙️ 设置</button>
-        <button :class="{ active: activeTab === 'learn' }" @click="activeTab = 'learn'">📚 课堂</button>
+        <button v-for="t in TABS" :key="t.id"
+          :class="{ active: activeTab === t.id }"
+          @click="activeTab = t.id">{{ t.label }}</button>
       </nav>
       <div class="status" v-if="cfg">
-        <span class="badge yellow">{{ cfg.settings.active_symbols.length }} 活跃</span>
-        <span class="badge">{{ cfg.symbols.length }} 总</span>
-        <span class="badge">{{ cfg.strategies.length }} 策略</span>
+        <span class="badge yellow">{{ (cfg.active_symbols || []).length }} 活跃</span>
+        <span class="badge">{{ symbolCount }} 总</span>
+        <span class="badge">{{ strategyCount }} 策略</span>
       </div>
     </header>
 
     <main class="main">
-      <Dashboard v-if="activeTab === 'dashboard' && cfg" :cfg="cfg" />
-      <KLine v-else-if="activeTab === 'kline' && cfg" :cfg="cfg" />
-      <Factor v-else-if="activeTab === 'factor' && cfg" :cfg="cfg" />
-      <Filter v-else-if="activeTab === 'filter' && cfg" :cfg="cfg" />
-      <Strategy v-else-if="activeTab === 'strategy' && cfg" :cfg="cfg" />
-      <Symbols v-else-if="activeTab === 'symbols' && cfg" :cfg="cfg" :reload="reloadCfg" />
-      <DataPanel v-else-if="activeTab === 'data'" />
-      <Trade v-else-if="activeTab === 'trade'" />
-      <Settings v-else-if="activeTab === 'settings' && cfg" :cfg="cfg" :reload="reloadCfg" />
-      <Learn v-else-if="activeTab === 'learn'" :cfg="cfg" />
+      <component v-if="ready" :is="active.comp" v-bind="activeProps" />
       <div v-else class="loading">加载中...</div>
     </main>
   </div>
