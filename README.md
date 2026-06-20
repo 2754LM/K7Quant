@@ -62,12 +62,15 @@ Binance API 在中国大陆需要走代理，两种方式任选其一：
 
 ```
 K7Quant/
-├── README.md / ARCHITECTURE.md / AGENTS.md / LICENSE
+├── README.md / AGENTS.md / LICENSE
 ├── config.yaml                 # ⚙️ 主配置 (UI 可编辑, 根目录单文件)
+├── pyproject.toml              # 🐍 Python 项目元数据 + 依赖 (SQLAlchemy, FastAPI...)
+├── requirements.txt            # 同步镜像
 │
 ├── backend/                    # 🌐 FastAPI 后端
 │   ├── app.py                  # 入口: lifespan + 路由注册 + 静态前端
-│   ├── api/                    # API 路由层 (按域拆分)
+│   ├── models.py               # 🗄️ SQLAlchemy ORM 模型 (Symbol/Strategy/Factor/...)
+│   ├── api/                    # API 路由层 (按域拆分, 薄编排)
 │   │   ├── backtest_api.py     # /api/backtest/*
 │   │   ├── factor_api.py       # /api/factor/*
 │   │   ├── strategy_api.py     # /api/strategy/*
@@ -76,28 +79,36 @@ K7Quant/
 │   │   ├── config_api.py       # /api/config/*
 │   │   ├── trade_api.py        # /api/trade/* (占位)
 │   │   └── rule_api.py         # /api/rule/* (自定义规则)
-│   ├── services/               # 业务层 (编排 core + 规则)
-│   ├── core/                   # config(YAML 加载) + logger + 路径常量
-│   ├── data/                   # fetcher(Binance) + cache(CSV) + access
-│   ├── factor/                 # 因子库 (33+ 预置因子)
-│   ├── strategy/               # DSL 引擎 StrategyEngine + 8 个内置策略
+│   ├── services/               # 业务层 (编排 models + domain)
+│   │   ├── backtest_service.py
+│   │   ├── factor_service.py
+│   │   ├── strategy_service.py
+│   │   ├── symbol_service.py
+│   │   ├── data_service.py
+│   │   ├── trade_service.py
+│   │   └── config_service.py
+│   ├── core/                   # 基础设施 (config + logger + paths + db engine)
+│   ├── data/                   # 数据层 (fetcher + cache + access)
+│   ├── factor/                 # 因子库 (33+ 预置因子 + 自动注册)
+│   ├── strategy/               # DSL 引擎 + 8 个内置策略
 │   ├── backtest/               # Backtester + compute_metrics + 绘图
-│   └── storage/                # SQLite: db + crud
+│   └── storage/                # 兼容层 (旧 crud/db 的别名, 新代码用 models)
 │
 ├── frontend/                   # 🎨 Vue3 前端
 │   └── src/
 │       ├── App.vue             # 根布局 (Naive UI Provider + Tab 路由 + 系统日志)
 │       ├── main.js             # 入口 (注册 Naive UI)
 │       ├── api/index.js        # axios 封装 + 系统日志自动记录
-│       ├── components/         # 可复用组件
-│       │   ├── DateRangePicker.vue    # 区间选择 (1周/1月/3月/... + HTML5 date)
-│       │   ├── TimeframePicker.vue    # 视觉化 TF 选择 (分钟/小时/天/周 + 自定义)
+│       ├── components/         # 可复用组件 (Naive UI 优先)
+│       │   ├── DateRangePicker.vue    # n-date-picker + 快捷区间
+│       │   ├── TimeframePicker.vue    # 分组按钮 (分/时/天/周 + 自定义)
 │       │   ├── StrategyPicker.vue
 │       │   ├── MetricCard.vue
 │       │   ├── HelpTip.vue
 │       │   ├── StateView.vue          # loading/error/empty 三态
 │       │   ├── RuleBuilder.vue        # 因子条件构建器 (字段+算子+值)
 │       │   ├── SystemLogPanel.vue     # 顶部 🔔 系统日志面板
+│       │   ├── LoadingOverlay.vue     # 浮层加载动画
 │       │   └── MonacoEditor.vue       # Monaco 代码编辑器
 │       ├── views/              # 10 个页面
 │       │   ├── Dashboard.vue   # 智能回测 + 多周期对比 + 自定义代码面板
@@ -113,6 +124,9 @@ K7Quant/
 │       └── utils/
 │           └── systemLog.js    # 全局日志服务 (reactive)
 │
+├── .vscode/
+│   └── launch.json             # 🔧 VSCode 一键启动 (Backend + Frontend + Full Stack)
+├── .idea/runConfigurations/    # 🔧 PyCharm/IntelliJ run configurations
 ├── run.py                      # 一键启动 (读 config.yaml 端口)
 ├── install.bat / start.bat     # Windows 脚本
 ├── requirements.txt
@@ -189,12 +203,41 @@ signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND NOT CROSS_DOWN(MA(close, 7), 
 
 ## 🛠️ 技术栈
 
-- **后端**: FastAPI + Uvicorn + Pydantic + PyYAML
-- **前端**: Vue 3 + Vite + ECharts + Naive UI + Axios
+- **后端**: FastAPI + Uvicorn + SQLAlchemy 2.0 ORM + Pydantic + PyYAML
+- **前端**: Vue 3 + Vite + ECharts + **Naive UI** + Axios
 - **数据**: Binance Spot API (无需 Key)
 - **计算**: pandas + numpy + matplotlib
-- **配置**: 根目录 `config.yaml` (UI 可编辑) + SQLite (`data/k7quant.db`)
+- **存储**: SQLite (`data/k7quant.db`) + 完整 ORM 模型 (`backend/models.py`)
+- **配置**: 根目录 `config.yaml` (UI 可编辑) + `pyproject.toml` (Python 依赖)
 - **编辑器**: Monaco (策略代码) + 表达式编辑器双模式
+
+## 🛠️ IDE 集成
+
+**VSCode / Cursor**: 打开项目后, F5 选择「Full Stack」一键启动前后端
+- 详见 `.vscode/launch.json`
+
+**PyCharm / IntelliJ IDEA**: 右上角运行配置下拉选择
+- `Backend: FastAPI Dev` (uvicorn --reload)
+- `Frontend: Vite Dev` (npm run dev)
+- `Full Stack (Backend+Frontend)` (同时启动两个)
+- 详见 `.idea/runConfigurations/`
+
+**命令行**:
+```bash
+# 后端 (热更新)
+uvicorn backend.app:app --reload --host 127.0.0.1 --port 8765
+
+# 前端 (热更新)
+cd frontend && npm run dev
+```
+
+## 📦 扩展指南
+
+- **加策略**: `backend/strategy/__init__.py` 的 `BUILTIN_STRATEGIES` 加一条, 重启自动写入 DB
+- **加因子**: `backend/factor/__init__.py` 写 `f_xxx(df, **p)` + 在 `_FACTORS` 注册
+- **加表/字段**: `backend/models.py` 加 ORM 类, 重启自动 `create_all` (SQLAlchemy 自动迁移)
+- **加 API**: `backend/api/xxx_api.py` 加 endpoint + `app.py` `include_router`
+- **加页面**: `frontend/src/views/xxx.vue` + `App.vue` 的 `TABS` 注册
 
 ## ⚠️ 免责声明
 
