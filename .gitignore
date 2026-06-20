@@ -19,7 +19,6 @@ frontend/dist/
 frontend/.vite/
 
 # 数据和输出
-data/
 output/
 *.csv
 *.png
