@@ -14,7 +14,7 @@ function select(id) {
 <template>
   <div class="picker">
     <button v-for="s in strategies" :key="s.id"
-      :class="{ active: Number(modelValue) === s.id }"
+      :class="{ active: modelValue === s.id }"
       @click="select(s.id)"
       :title="s.description">
       <span class="icon">{{ s.icon || '📊' }}</span>

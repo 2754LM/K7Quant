@@ -16,7 +16,7 @@ const mode = ref('preset') // 'preset' | 'code'
 
 // ---------- 预设策略模式 ----------
 const params = ref({
-  strategy_id: 1,
+  strategy_id: null,
   timeframe: '4h',
   ma_short: 7, ma_long: 25,
   top_n: 3, hold: 12, lookback: 24,
@@ -35,14 +35,14 @@ let chart = null
 const strategies = computed(() => cfg.value?.strategies || [])
 const timeframes = computed(() => cfg.value?.timeframes || ['1d'])
 const activeStrategy = computed(() =>
-  strategies.value.find(s => s.id === Number(params.value.strategy_id))
+  strategies.value.find(s => s.id === params.value.strategy_id)
 )
-const STRATEGY_FIELDS = {
-  ma_cross: ['ma_short', 'ma_long'],
-  momentum_rotation: ['top_n', 'hold', 'lookback'],
-  rsi: ['rsi_period', 'rsi_oversold', 'rsi_overbought'],
-  macd: ['macd_fast', 'macd_slow', 'macd_signal'],
-}
+
+watch(strategies, (list) => {
+  if (list.length && params.value.strategy_id === null) {
+    params.value.strategy_id = list[0].id
+  }
+}, { immediate: true })
 
 watch(() => params.value.strategy_id, () => {
   const s = activeStrategy.value
@@ -246,11 +246,11 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
       </div>
 
       <div class="config-row">
-        <div v-for="key in (STRATEGY_FIELDS[activeStrategy?.id] || [])" :key="key" class="cfg">
-          <label>{{ activeStrategy?.params_schema?.[key]?.label || key }}</label>
+        <div v-for="(schema, key) in (activeStrategy?.params_schema || {})" :key="key" class="cfg">
+          <label>{{ schema.label || key }}</label>
           <input type="number" v-model.number="params[key]"
-            :min="activeStrategy?.params_schema?.[key]?.min"
-            :max="activeStrategy?.params_schema?.[key]?.max"
+            :min="schema.min"
+            :max="schema.max"
             @change="run" />
         </div>
         <div class="cfg">
