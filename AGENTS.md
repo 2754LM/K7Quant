@@ -10,27 +10,30 @@
 
 ## 技术栈
 
-- **后端**: Python 3.11 + FastAPI + pandas + numpy + SQLAlchemy-style sqlite3
-- **前端**: Vue 3.4 + Vite 5 + ECharts 5 + Naive UI + axios
-- **存储**: SQLite (单文件 `data/k7quant.db`)，按 thread-local 连接
-- **配置**: YAML (`config.yaml`，路径见 `backend/core/config.py:CONFIG_PATH`)
-- **数据源**: Binance 公开 REST API (无需 key，行情数据)
+- **后端**: Python 3.10+ + FastAPI + **SQLAlchemy 2.0 ORM** + pandas + numpy
+- **前端**: Vue 3.4 + Vite 5 + ECharts 5 + **Naive UI** + axios
+- **存储**: SQLite (单文件 `data/k7quant.db`)，SQLAlchemy 自动建表/迁移
+- **配置**: YAML (`config.yaml`) + `pyproject.toml` (Python 依赖) + `requirements.txt`
+- **数据源**: Binance 公开 REST API (无需 key)
 
 ## 项目结构
 
 ```
 D:\Desktop\lh\
-├── backend/                  # Python 后端 (FastAPI)
+├── backend/                  # Python 后端 (FastAPI + SQLAlchemy ORM)
+│   ├── app.py                # 入口: lifespan + 路由注册 + 静态前端
+│   ├── models.py             # 🗄️ SQLAlchemy 2.0 ORM 模型 (Symbol/Strategy/Factor/...)
+│   │                         #    一个文件集中维护, 加表只需加一个类
 │   ├── api/                  # 路由层 (薄编排, 业务逻辑放 services/)
 │   │   ├── __init__.py
-│   │   ├── backtest_api.py   # /api/backtest/*
-│   │   ├── config_api.py     # /api/config/*
-│   │   ├── data_api.py       # /api/data/*
-│   │   ├── factor_api.py     # /api/factor/*
-│   │   ├── rule_api.py       # /api/rule/*
-│   │   ├── strategy_api.py   # /api/strategy/*
-│   │   ├── symbol_api.py     # /api/symbol/*
-│   │   └── trade_api.py      # /api/trade/*
+│   │   ├── backtest_api.py
+│   │   ├── config_api.py
+│   │   ├── data_api.py
+│   │   ├── factor_api.py
+│   │   ├── rule_api.py
+│   │   ├── strategy_api.py
+│   │   ├── symbol_api.py
+│   │   └── trade_api.py
 │   ├── services/             # 业务逻辑层
 │   │   ├── backtest_service.py
 │   │   ├── config_service.py
@@ -40,58 +43,46 @@ D:\Desktop\lh\
 │   │   ├── strategy_service.py
 │   │   ├── symbol_service.py
 │   │   └── trade_service.py
-│   ├── storage/              # 数据访问
-│   │   ├── db.py             # SQLite schema + 连接
-│   │   └── crud.py           # CRUD 操作
+│   ├── storage/__init__.py   # 兼容层: 旧 crud.xxx 调用转发到 models
 │   ├── factor/__init__.py    # 33+ 因子 (MA/EMA/RSI/MACD/...)
 │   ├── strategy/__init__.py  # 8 个内置策略 + DSL 引擎
 │   ├── backtest/__init__.py  # Backtester + compute_metrics
 │   ├── data/                 # 数据下载/缓存/访问
-│   │   ├── fetcher.py        # Binance REST 客户端
-│   │   ├── cache.py          # 本地 CSV 缓存
-│   │   └── access.py         # 缓存优先
+│   │   ├── fetcher.py
+│   │   ├── cache.py
+│   │   └── access.py
 │   ├── core/
-│   │   ├── __init__.py       # 路径常量 (ROOT/DATA_DIR/...)
+│   │   ├── __init__.py       # 路径常量 + DB engine 初始化
 │   │   ├── config.py         # YAML 配置加载/保存
-│   │   └── logger.py         # 日志
-│   └── app.py                # FastAPI 入口, 挂载 router
+│   │   └── logger.py
+│   └── ... (按域拆分, 每域一个文件夹)
 ├── frontend/                 # Vue3 前端
 │   └── src/
-│       ├── api/index.js      # axios + 全部 API 调用
-│       ├── components/       # 复用组件
-│       │   ├── DateRangePicker.vue    # 区间选择 (快捷按钮 + HTML5 date)
-│       │   ├── TimeframePicker.vue    # 视觉化 TF 选择 (分钟/小时/天/周)
+│       ├── api/index.js      # axios + 系统日志自动记录
+│       ├── components/       # 复用组件 (Naive UI 优先)
+│       │   ├── DateRangePicker.vue    # n-date-picker + 快捷区间
+│       │   ├── TimeframePicker.vue    # 分组按钮 + 自定义
 │       │   ├── StrategyPicker.vue
 │       │   ├── MetricCard.vue
 │       │   ├── HelpTip.vue
-│       │   ├── StateView.vue          # loading/error/empty 三态
-│       │   ├── RuleBuilder.vue        # 因子条件构建器
-│       │   └── SystemLogPanel.vue     # 顶部 🔔 系统日志面板
-│       ├── views/             # 页面 (10 个 Tab)
-│       │   ├── Dashboard.vue  # 智能回测 + 多周期 + 自定义代码
-│       │   ├── KLine.vue      # K线图 + 多指标
-│       │   ├── Factor.vue     # 因子 (单/多/全部)
-│       │   ├── Filter.vue     # 币种筛选
-│       │   ├── Symbols.vue    # 币种库
-│       │   ├── Strategy.vue   # 策略编辑器
-│       │   ├── DataPanel.vue  # 数据缓存
-│       │   ├── Trade.vue      # 模拟/实盘 (占位)
-│       │   ├── Settings.vue   # 设置
-│       │   └── Learn.vue      # 教程
+│       │   ├── StateView.vue
+│       │   ├── RuleBuilder.vue
+│       │   ├── SystemLogPanel.vue
+│       │   ├── LoadingOverlay.vue
+│       │   └── MonacoEditor.vue
+│       ├── views/             # 10 个 Tab
 │       ├── utils/
-│       │   └── systemLog.js  # 全局日志服务 (reactive)
+│       │   └── systemLog.js
 │       ├── App.vue            # 根 (Naive UI Provider + Tab 路由)
-│       ├── main.js            # 入口 (app.use(naive))
-│       └── style.css          # 全局 CSS 变量 (Binance 暗色主题)
+│       ├── main.js            # 入口
+│       └── style.css
 ├── config.yaml               # 用户配置 (host/port/proxy/...)
-├── data/                      # 运行时数据 (DB + 缓存, 已 gitignore)
-│   ├── k7quant.db            # SQLite
-│   └── cache/{tf}/{symbol}.csv
-├── logs/                      # 运行时日志 (已 gitignore)
-├── run.py                    # 启动入口 (FastAPI)
-├── start.bat                 # Windows 一键启动
-├── install.bat                # Windows 一键安装
-├── requirements.txt
+├── pyproject.toml            # 🐍 Python 项目元数据 + 依赖 + ruff/pyright 配置
+├── requirements.txt          # 同步镜像
+├── .vscode/launch.json       # 🔧 VSCode / Cursor 一键启动
+├── .idea/runConfigurations/  # 🔧 PyCharm / IntelliJ 一键启动
+├── run.py                    # 启动入口
+├── install.bat / start.bat   # Windows 脚本
 └── README.md
 ```
 
@@ -217,6 +208,21 @@ D:\Desktop\lh\
 
 在 `backend/strategy/__init__.py` 的 `BUILTIN_STRATEGIES` 数组加一条，然后重启后端，会自动写入 DB (见 `strategy_service.init_builtin_strategies()`)。
 
+## 添加新 ORM 表 / 字段 (SQLAlchemy 2.0)
+
+1. 在 `backend/models.py` 加新的 declarative class:
+```python
+class NewEntity(Base):
+    __tablename__ = "new_entity"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    # ... 其他字段
+    def to_dict(self) -> dict: ...   # 序列化用
+```
+2. 在 `models.py` 加便捷函数 `list_xxx()`, `get_xxx()`, `create_xxx()`, etc.
+3. 重启后端 → `Base.metadata.create_all()` 自动建表
+4. 在 `backend/services/` 加业务函数, 在 `backend/api/` 加 endpoint
+
 ## 添加新 API 端点
 
 1. 在对应 `backend/api/xxx_api.py` 加 endpoint（业务逻辑放 `services/`，router 只编排）：
@@ -253,6 +259,7 @@ python -c "from backend.services.backtest_service import scan_pool; print(scan_p
 
 # 起服务
 python run.py            # 读 config.yaml 的端口, 默认 http://127.0.0.1:8765
+# 或: uvicorn backend.app:app --reload --host 127.0.0.1 --port 8765
 
 # 前端 dev (热更新, vite 代理 /api -> 8765)
 cd frontend && npm run dev
@@ -263,20 +270,23 @@ cd frontend && npm run build    # 产物 frontend/dist, FastAPI 自动 serve
 curl http://127.0.0.1:8765/api/health
 curl http://127.0.0.1:8765/api/config | python -m json.tool
 curl http://127.0.0.1:8765/api/factor/list | python -m json.tool
+
+# ORM 模型查询
+python -c "from backend.models import list_symbols, list_strategies; print(len(list_symbols()), len(list_strategies()))"
 ```
 
 ## 常见陷阱
 
 1. **配置文件是根目录 `config.yaml`**（不是 `config/settings.yaml`）。
-2. **DB 是 SQLite** `data/k7quant.db`；连接每线程独立，写操作走 `transaction()`。
+2. **DB 是 SQLite + SQLAlchemy** `data/k7quant.db`；模型在 `backend/models.py`，加表只需加一个类，重启自动 `create_all`。
 3. **`data/`、`*.db`、`frontend/dist/`、`logs/` 都被 .gitignore**；`backend/data/` 是源码包，不要误删。
 4. **CORS 只放行本机来源**；不要为了图方便改回 `allow_origins=["*"]`（曾导致安全问题）。
 5. **DSL 不要用 eval**；扩展语法请改 `StrategyEngine`（AST 白名单），保持安全。
 6. **YAML/文件读写统一 `encoding="utf-8"`**；Binance fetcher 自带限速，不要去掉。
 7. **ECharts 实例**: 切换页面后再切回, 用 `getOrInitChart()` 检测并 dispose+重新 init, 否则旧实例画在 detached DOM 上看不到。
 8. **Naive UI 消息**: 在子组件中需用 `inject('n-message-provider')` 或 `useMessage()` (后者需在 `<n-message-provider>` 内部使用)。简单场景用全局 toast 也行。
-9. **时间格式**: 前后端统一 YYYYMMDD (8 位字符串)。DateRangePicker 自动转换 HTML5 的 YYYY-MM-DD。
-10. **改了后端要重启**: `pythonw` 启动的进程不会热加载 Python 模块。
+9. **时间格式**: 前后端统一 YYYYMMDD (8 位字符串)。`DateRangePicker` 用 Naive UI 的 `n-date-picker` + 内部转换。
+10. **改了后端要重启**: `pythonw` 启动的进程不会热加载 Python 模块；用 `uvicorn --reload` 开发。
 
 ## 安全须知 (重要)
 
