@@ -246,109 +246,109 @@ def f_trix(df, period: int = 15) -> pd.Series:
 # ============ 注册所有因子 ============
 
 _FACTORS = [
-    ("ma", "ma", "MA", "均线类", "close.rolling({period}).mean()",
+    ("ma", "移动平均线", "MA", "均线类", "close.rolling({period}).mean()",
      "过去 N 根 K 线收盘价的平均值", {"period": {"label": "周期", "type": "int", "default": 20, "min": 2, "max": 250}}),
 
-    ("ema", "ema", "EMA", "均线类", "close.ewm(span={period}).mean()",
+    ("ema", "指数移动平均", "EMA", "均线类", "close.ewm(span={period}).mean()",
      "指数加权移动平均, 近期权重更高", {"period": {"label": "周期", "type": "int", "default": 20, "min": 2, "max": 250}}),
 
-    ("wma", "wma", "WMA", "均线类", "weighted MA",
+    ("wma", "加权移动平均", "WMA", "均线类", "weighted MA",
      "加权移动平均, 近期权重线性递增", {"period": {"label": "周期", "type": "int", "default": 20, "min": 2, "max": 250}}),
 
-    ("rsi", "rsi", "RSI", "震荡类", "100 - 100 / (1 + avg_gain / avg_loss)",
+    ("rsi", "RSI 相对强弱", "RSI", "震荡类", "100 - 100 / (1 + avg_gain / avg_loss)",
      "相对强弱指数, >70 超买, <30 超卖", {"period": {"label": "周期", "type": "int", "default": 14, "min": 2, "max": 50}}),
 
-    ("macd", "macd", "MACD", "趋势类", "EMA12 - EMA26",
+    ("macd", "MACD 指标", "MACD", "趋势类", "EMA12 - EMA26",
      "指数平滑异同移动平均, 含主线/信号/柱", {"fast": {"label": "快线", "type": "int", "default": 12, "min": 2, "max": 60},
-                                                  "slow": {"label": "慢线", "type": "int", "default": 26, "min": 5, "max": 120},
-                                                  "signal": {"label": "信号线", "type": "int", "default": 9, "min": 2, "max": 50}}),
+                                                   "slow": {"label": "慢线", "type": "int", "default": 26, "min": 5, "max": 120},
+                                                   "signal": {"label": "信号线", "type": "int", "default": 9, "min": 2, "max": 50}}),
 
-    ("boll", "boll", "布林带", "趋势类", "MA ± 2*STD",
+    ("boll", "布林带", "布林带", "趋势类", "MA ± 2*STD",
      "布林带, 价格突破上下轨为极值信号", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100},
-                                             "std": {"label": "标准差倍数", "type": "float", "default": 2.0, "min": 0.5, "max": 4.0}}),
+                                              "std": {"label": "标准差倍数", "type": "float", "default": 2.0, "min": 0.5, "max": 4.0}}),
 
-    ("kdj", "kdj", "KDJ", "震荡类", "RSV -> K, D, J",
+    ("kdj", "KDJ 随机指标", "KDJ", "震荡类", "RSV -> K, D, J",
      "随机指标, K<20 买入, K>80 卖出", {"n": {"label": "RSV 周期", "type": "int", "default": 9, "min": 3, "max": 50},
-                                          "m1": {"label": "K 平滑", "type": "int", "default": 3, "min": 1, "max": 10},
-                                          "m2": {"label": "D 平滑", "type": "int", "default": 3, "min": 1, "max": 10}}),
+                                           "m1": {"label": "K 平滑", "type": "int", "default": 3, "min": 1, "max": 10},
+                                           "m2": {"label": "D 平滑", "type": "int", "default": 3, "min": 1, "max": 10}}),
 
-    ("atr", "atr", "ATR", "波动类", "TR 的 N 周期均值",
+    ("atr", "ATR 波幅", "ATR", "波动类", "TR 的 N 周期均值",
      "平均真实波幅, 衡量波动大小", {"period": {"label": "周期", "type": "int", "default": 14, "min": 5, "max": 50}}),
 
-    ("adx", "adx", "ADX", "趋势类", "DX 的 N 周期均值",
+    ("adx", "ADX 趋势强度", "ADX", "趋势类", "DX 的 N 周期均值",
      "平均趋向指数, >25 强趋势, <20 弱趋势", {"period": {"label": "周期", "type": "int", "default": 14, "min": 5, "max": 50}}),
 
-    ("cci", "cci", "CCI", "震荡类", "(TP-MA)/(0.015*MD)",
+    ("cci", "CCI 顺势指标", "CCI", "震荡类", "(TP-MA)/(0.015*MD)",
      "顺势指标, >100 超买, <-100 超卖", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100}}),
 
-    ("obv", "obv", "OBV", "成交量类", "sign(Δclose) * volume 的累计",
+    ("obv", "OBV 能量潮", "OBV", "成交量类", "sign(Δclose) * volume 的累计",
      "能量潮, 价升量增为真涨", {}),
 
-    ("vwap", "vwap", "VWAP", "成交量类", "Σ(TP*V) / ΣV",
+    ("vwap", "VWAP 成交均价", "VWAP", "成交量类", "Σ(TP*V) / ΣV",
      "成交量加权均价, 机构常用基准", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100}}),
 
-    ("mfi", "mfi", "MFI", "成交量类", "类似 RSI 但用成交量",
+    ("mfi", "MFI 资金流量", "MFI", "成交量类", "类似 RSI 但用成交量",
      "资金流量指标, >80 超买, <20 超卖", {"period": {"label": "周期", "type": "int", "default": 14, "min": 5, "max": 50}}),
 
-    ("momentum", "momentum", "动量", "动量类", "close / close.shift(N) - 1",
+    ("momentum", "动量", "Momentum", "动量类", "close / close.shift(N) - 1",
      "N 根涨幅", {"period": {"label": "周期", "type": "int", "default": 20, "min": 1, "max": 250}}),
 
-    ("roc", "roc", "ROC", "动量类", "(close/close.shift(N) - 1) * 100",
+    ("roc", "ROC 变化率", "ROC", "动量类", "(close/close.shift(N) - 1) * 100",
      "变化率百分比", {"period": {"label": "周期", "type": "int", "default": 20, "min": 1, "max": 250}}),
 
-    ("volatility", "volatility", "波动率", "波动类", "std * sqrt(252)",
+    ("volatility", "波动率", "Volatility", "波动类", "std * sqrt(252)",
      "年化波动率", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100}}),
 
-    ("zscore", "zscore", "Z-Score", "统计类", "(close - MA) / STD",
+    ("zscore", "Z-Score 分数", "Z-Score", "统计类", "(close - MA) / STD",
      "标准化分数, |z|>2 为异常", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100}}),
 
-    ("drawdown", "drawdown", "滚动回撤", "风险类", "(close - max) / max",
+    ("drawdown", "滚动回撤", "Drawdown", "风险类", "(close - max) / max",
      "N 周期内相对最高点的跌幅", {"period": {"label": "周期", "type": "int", "default": 60, "min": 5, "max": 250}}),
 
-    ("high_break", "high_break", "突破新高", "形态类", "close > high.rolling(N).max().shift(1)",
+    ("high_break", "突破新高", "High Break", "形态类", "close > high.rolling(N).max().shift(1)",
      "突破 N 日新高", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 250}}),
 
-    ("low_break", "low_break", "跌破新低", "形态类", "close < low.rolling(N).min().shift(1)",
+    ("low_break", "跌破新低", "Low Break", "形态类", "close < low.rolling(N).min().shift(1)",
      "跌破 N 日新低", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 250}}),
 
-    ("volume_ma", "volume_ma", "成交量均线", "成交量类", "volume.rolling(N).mean()",
+    ("volume_ma", "成交量均线", "Volume MA", "成交量类", "volume.rolling(N).mean()",
      "N 周期成交量均值", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100}}),
 
-    ("volume_ratio", "volume_ratio", "量比", "成交量类", "volume / MA(volume)",
+    ("volume_ratio", "量比", "Volume Ratio", "成交量类", "volume / MA(volume)",
      "当前量 / 均量, >1.5 放量", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100}}),
 
-    ("amount_ma", "amount_ma", "成交额均线", "成交量类", "amount.rolling(N).mean()",
+    ("amount_ma", "成交额均线", "Amount MA", "成交量类", "amount.rolling(N).mean()",
      "N 周期成交额均值", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100}}),
 
-    ("skew", "skew", "偏度", "统计类", "rolling skew",
+    ("skew", "偏度", "Skewness", "统计类", "rolling skew",
      "收益率偏度, 正=右偏(大涨更多)", {"period": {"label": "周期", "type": "int", "default": 60, "min": 10, "max": 250}}),
 
-    ("kurt", "kurt", "峰度", "统计类", "rolling kurtosis",
+    ("kurt", "峰度", "Kurtosis", "统计类", "rolling kurtosis",
      "收益率峰度, 高=极端事件多", {"period": {"label": "周期", "type": "int", "default": 60, "min": 10, "max": 250}}),
 
-    ("position_pct", "position_pct", "区间位置", "统计类", "(close - low) / (high - low)",
+    ("position_pct", "区间位置", "Position %", "统计类", "(close - low) / (high - low)",
      "价格在 N 日区间内的位置 (0-1)", {"period": {"label": "周期", "type": "int", "default": 252, "min": 20, "max": 500}}),
 
-    ("pivot", "pivot", "轴心点", "形态类", "(H+L+C)/3 (前日)",
+    ("pivot", "轴心点", "Pivot Point", "形态类", "(H+L+C)/3 (前日)",
      "经典轴心点, 价格围绕它波动", {}),
 
-    ("supertrend", "supertrend", "SuperTrend", "趋势类", "ATR-based trend",
+    ("supertrend", "SuperTrend 趋势", "SuperTrend", "趋势类", "ATR-based trend",
      "海龟改良版, 1=上升 -1=下降", {"period": {"label": "周期", "type": "int", "default": 10, "min": 5, "max": 50},
-                                            "multiplier": {"label": "倍数", "type": "float", "default": 3.0, "min": 1.0, "max": 5.0}}),
+                                             "multiplier": {"label": "倍数", "type": "float", "default": 3.0, "min": 1.0, "max": 5.0}}),
 
-    ("ichimoku_signal", "ichimoku_signal", "一目均衡", "趋势类", "(Tenkan > Kijun) ? 1 : -1",
+    ("ichimoku_signal", "一目均衡信号", "Ichimoku", "趋势类", "(Tenkan > Kijun) ? 1 : -1",
      "一目均衡表信号, 1=上升趋势", {}),
 
-    ("donchian", "donchian", "海龟通道", "趋势类", "high/low N 周期",
+    ("donchian", "海龟通道", "Donchian", "趋势类", "high/low N 周期",
      "海龟交易法通道, 突破上轨做多", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100}}),
 
-    ("chaikin_mf", "chaikin_mf", "CMF 资金流", "成交量类", "ΣMFV / ΣV",
+    ("chaikin_mf", "CMF 资金流", "Chaikin MF", "成交量类", "ΣMFV / ΣV",
      "蔡金资金流, >0.05 资金流入", {"period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100}}),
 
-    ("williams_r", "williams_r", "Williams %R", "震荡类", "(Hn-C)/(Hn-Ln)*-100",
+    ("williams_r", "威廉指标 W%R", "Williams %R", "震荡类", "(Hn-C)/(Hn-Ln)*-100",
      "威廉指标, >-20 超买, <-80 超卖", {"period": {"label": "周期", "type": "int", "default": 14, "min": 5, "max": 50}}),
 
-    ("trix", "trix", "TRIX", "趋势类", "三重 EMA 的变化率",
+    ("trix", "TRIX 三重均线", "TRIX", "趋势类", "三重 EMA 的变化率",
      "三重指数平滑, 过滤噪音", {"period": {"label": "周期", "type": "int", "default": 15, "min": 5, "max": 50}}),
 ]
 

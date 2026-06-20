@@ -35,7 +35,7 @@ const tableRows = computed(() => {
   return data.value.kline.slice(-200).reverse()
 })
 
-watch([symbol, timeframe], () => load())
+watch([symbol, timeframe], () => load(), { immediate: true })
 watch(visibleMA, () => drawChart(), { deep: true })
 
 async function load() {

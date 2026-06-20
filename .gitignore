@@ -18,13 +18,19 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
-# 数据和输出
-output/
+# 数据和输出 (运行时产物; backend/data 是 .py 源码包, 不受这些规则影响)
+/data/
+/output/
 *.csv
 *.png
 *.jpg
 *.jpeg
 *.gif
+
+# SQLite 运行时数据库 (任何位置都不入库)
+*.db
+*.db-shm
+*.db-wal
 
 # 日志
 *.log
@@ -53,3 +59,11 @@ dist/
 # 测试文件
 _test_*.py
 *_test.py
+
+# PyInstaller/IDE 构建输出
+out/
+
+# 运行时数据库在各目录的残留
+backend/data/*.db
+backend/data/*.db-shm
+backend/data/*.db-wal

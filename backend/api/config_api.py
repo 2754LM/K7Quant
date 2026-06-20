@@ -16,6 +16,7 @@ class BacktestConfigRequest(BaseModel):
     leverage: Optional[int] = None
     position_mode: Optional[str] = None
     fixed_amount: Optional[float] = None
+    rebalance_bars: Optional[int] = None
     default_timeframe: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -44,7 +45,8 @@ class TradingConfigRequest(BaseModel):
 
 @router.get("")
 def get_full():
-    return sys_config.load_config()
+    from backend.services.config_service import get_full_config
+    return get_full_config()
 
 
 @router.put("/backtest")

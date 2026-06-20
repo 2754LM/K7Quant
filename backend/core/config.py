@@ -1,5 +1,6 @@
-"""系统配置: 启动时从 settings.yaml 加载, 写回 DB"""
+"""系统配置: 启动时从 config.yaml 加载, 文件覆盖默认值后全局缓存"""
 import os
+import copy
 from pathlib import Path
 from typing import Any
 import yaml
@@ -34,10 +35,12 @@ DEFAULTS = {
         "position_mode": "all_in",    # all_in / fixed_amount / ratio
         "fixed_amount": 1000,         # 当 position_mode=fixed_amount
         "leverage": 1,
+        "rebalance_bars": 1,          # 调仓频率: 每 N 根 K 线才换一次仓
         "default_timeframe": "4h",
         "start_date": "20240101",
         "end_date": "auto",
     },
+    "timeframes": ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "3d", "1w"],
     "ui": {
         "theme": "dark",              # dark / light
         "show_help_tooltips": True,   # 全局问号提示开关
@@ -63,8 +66,7 @@ def load_config(path: Path = None) -> dict:
     if _cached:
         return _cached
 
-    cfg = {k: dict(v) if isinstance(v, dict) else v
-           for k, v in DEFAULTS.items()}
+    cfg = copy.deepcopy(DEFAULTS)
 
     p = path or CONFIG_PATH
     if p.exists():
