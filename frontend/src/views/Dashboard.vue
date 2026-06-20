@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
-import { scanPool, runBacktest, backtestCode } from '../api'
+import { scanPool, runBacktest, backtestCode, validateStrategyCode } from '../api'
 import * as echarts from 'echarts'
 
 import MetricCard from '../components/MetricCard.vue'
@@ -13,12 +13,12 @@ import HelpTip from '../components/HelpTip.vue'
 const cfg = inject('cfg')
 const reloadCfg = inject('reload')
 
-const mode = ref('preset') // 'preset' | 'code'
+const codePanelOpen = ref(false)
 const tfMode = ref('single') // 'single' | 'multi'
 const multiTfs = ref(['4h', '1d', '1w'])
-const multiResults = ref(null)  // 多周期回测结果
+const multiResults = ref(null)
 
-// ---------- 预设策略模式 ----------
+// ---------- 预设策略回测 ----------
 const params = ref({
   strategy_id: null,
   timeframe: '4h',
@@ -57,10 +57,14 @@ watch(() => params.value.strategy_id, () => {
       }
     }
   }
-  if (mode.value === 'preset') run()
+  run()
 }, { immediate: false })
 
-// ---------- 自定义代码模式 ----------
+watch([() => params.value.start_date, () => params.value.end_date, () => params.value.timeframe], () => {
+  if (tfMode.value === 'single') run()
+})
+
+// ---------- 自定义代码面板 ----------
 const codeForm = ref({
   code: 'signal = CROSS_UP(MA(close, 7), MA(close, 25))\n止损 = 0.05\n止盈 = 0.10\n仓位 = 1.0',
   symbol: 'BTCUSDT',
@@ -72,9 +76,28 @@ const codeForm = ref({
 const codeResult = ref(null)
 const codeLoading = ref(false)
 const codeError = ref('')
+const codeValidation = ref(null)  // { ok, error, rules }
 let codeChart = null
+let codeValidationTimer = null
 
 const allSymbols = computed(() => (cfg.value?.symbols || []).map(s => s.symbol))
+
+// 实时校验 (debounce 400ms)
+watch(() => codeForm.value.code, () => {
+  if (codeValidationTimer) clearTimeout(codeValidationTimer)
+  if (!codeForm.value.code.trim()) {
+    codeValidation.value = null
+    return
+  }
+  codeValidationTimer = setTimeout(async () => {
+    try {
+      const res = await validateStrategyCode(codeForm.value.code)
+      codeValidation.value = res.data
+    } catch (e) {
+      codeValidation.value = { ok: false, error: e.message }
+    }
+  }, 400)
+})
 
 async function runCode() {
   codeLoading.value = true
@@ -89,9 +112,13 @@ async function runCode() {
       end_date: codeForm.value.end_date,
       params: codeForm.value.params,
     })
-    codeResult.value = res.data
-    await nextTick()
-    drawCodeChart()
+    if (res.data?.error) {
+      codeError.value = res.data.error
+    } else {
+      codeResult.value = res.data
+      await nextTick()
+      drawCodeChart()
+    }
   } catch (e) {
     codeError.value = e.message
   } finally {
@@ -99,11 +126,32 @@ async function runCode() {
   }
 }
 
+function toggleCodePanel() {
+  codePanelOpen.value = !codePanelOpen.value
+  if (codePanelOpen.value) {
+    // 第一次展开时做一次校验
+    if (codeValidation.value === null && codeForm.value.code.trim()) {
+      validateStrategyCode(codeForm.value.code)
+        .then(r => codeValidation.value = r.data)
+        .catch(e => codeValidation.value = { ok: false, error: e.message })
+    }
+  }
+}
+
+function getOrInitCodeChart(elId) {
+  const el = document.getElementById(elId)
+  if (!el) return null
+  if (!codeChart || codeChart.getDom() !== el) {
+    if (codeChart) { try { codeChart.dispose() } catch (e) {} }
+    codeChart = echarts.init(el, null, { renderer: 'canvas' })
+  }
+  return codeChart
+}
+
 function drawCodeChart() {
   if (!codeResult.value?.equity?.length) return
-  const el = document.getElementById('code-equity-chart')
-  if (!el) return
-  if (!codeChart) codeChart = echarts.init(el, null, { renderer: 'canvas' })
+  const c = getOrInitCodeChart('code-equity-chart')
+  if (!c) return
   const startEq = codeResult.value.equity[0].equity
   const equity = codeResult.value.equity.map(r => [r.date, r.equity / startEq])
   const series = [{
@@ -117,7 +165,7 @@ function drawCodeChart() {
     series.push({ name: '买入持有', type: 'line', data: bm, smooth: true, showSymbol: false,
       lineStyle: { width: 1.5, color: '#f7931a' } })
   }
-  codeChart.setOption({
+  c.setOption({
     backgroundColor: 'transparent',
     title: { text: `${codeForm.value.symbol} · ${codeForm.value.timeframe}`,
       left: 'center', textStyle: { color: '#eaecef', fontSize: 14 } },
@@ -134,10 +182,7 @@ function drawCodeChart() {
   })
 }
 
-const codeMetrics = computed(() => {
-  const m = codeResult.value?.metrics || {}
-  return m
-})
+const codeMetrics = computed(() => codeResult.value?.metrics || {})
 
 // ---------- 共享 ----------
 const metrics = computed(() => result.value?.combined_metrics || {})
@@ -216,11 +261,20 @@ async function run() {
   }
 }
 
+function getOrInitChart(elId) {
+  const el = document.getElementById(elId)
+  if (!el) return null
+  if (!chart || chart.getDom() !== el) {
+    if (chart) { try { chart.dispose() } catch (e) {} }
+    chart = echarts.init(el, null, { renderer: 'canvas' })
+  }
+  return chart
+}
+
 function drawChart() {
   if (!result.value?.combined_equity?.length) return
-  const el = document.getElementById('equity-chart')
-  if (!el) return
-  if (!chart) chart = echarts.init(el, null, { renderer: 'canvas' })
+  const c = getOrInitChart('equity-chart')
+  if (!c) return
   const startEq = result.value.combined_equity[0].equity
   const equity = result.value.combined_equity.map(r => [r.date, r.equity / startEq])
   const series = [{
@@ -234,7 +288,7 @@ function drawChart() {
     series.push({ name: 'BTC', type: 'line', data: bm, smooth: true, showSymbol: false,
       lineStyle: { width: 1.5, color: '#f7931a' } })
   }
-  chart.setOption({
+  c.setOption({
     backgroundColor: 'transparent',
     title: { text: `币池组合 (${result.value.count} 个币种 · ${result.value.timeframe})`,
       left: 'center', textStyle: { color: '#eaecef', fontSize: 14 } },
@@ -259,9 +313,8 @@ const MULTI_COLORS = ['#f0b90b', '#3498db', '#e74c3c', '#9b59b6', '#1abc9c', '#e
 
 function drawMultiChart() {
   if (!multiResults.value?.length) return
-  const el = document.getElementById('equity-chart')
-  if (!el) return
-  if (!chart) chart = echarts.init(el, null, { renderer: 'canvas' })
+  const c = getOrInitChart('equity-chart')
+  if (!c) return
   const series = multiResults.value.map((r, i) => {
     if (!r.ok || !r.data?.combined_equity?.length) return null
     const e0 = r.data.combined_equity[0].equity
@@ -271,7 +324,7 @@ function drawMultiChart() {
       lineStyle: { width: 2, color: MULTI_COLORS[i % MULTI_COLORS.length] }
     }
   }).filter(Boolean)
-  chart.setOption({
+  c.setOption({
     backgroundColor: 'transparent',
     title: { text: `多周期对比: ${activeStrategy.value?.name || ''}`, left: 'center',
       textStyle: { color: '#eaecef', fontSize: 14 } },
@@ -291,24 +344,21 @@ function drawMultiChart() {
 
 <template>
   <div class="dashboard">
-    <div class="mode-tabs">
-      <button :class="{ active: mode === 'preset' }" @click="mode = 'preset'">📦 预设策略</button>
-      <button :class="{ active: mode === 'code' }" @click="mode = 'code'">✏️ 自定义代码</button>
-    </div>
-
-    <!-- ========== 预设策略模式 ========== -->
-    <template v-if="mode === 'preset'">
-      <div class="top-bar">
-        <StrategyPicker :strategies="strategies" v-model="params.strategy_id" @change="run" />
-        <div class="tf-mode-toggle">
-          <button :class="{ active: tfMode === 'single' }" @click="tfMode = 'single'">单周期</button>
-          <button :class="{ active: tfMode === 'multi' }" @click="tfMode = 'multi'">多周期对比</button>
-        </div>
-        <template v-if="tfMode === 'single'">
-          <TimeframePicker :timeframes="timeframes" v-model="params.timeframe" @change="run" />
-        </template>
-        <template v-else>
-          <div class="multi-tf">
+    <div class="top-bar">
+      <StrategyPicker :strategies="strategies" v-model="params.strategy_id" @change="run" />
+      <button class="code-toggle" :class="{ active: codePanelOpen }"
+        @click="toggleCodePanel" :title="codePanelOpen ? '关闭自定义代码' : '打开自定义代码'">
+        🧪 {{ codePanelOpen ? '收起代码' : '自定义代码' }}
+      </button>
+      <div class="tf-mode-toggle">
+        <button :class="{ active: tfMode === 'single' }" @click="tfMode = 'single'">单周期</button>
+        <button :class="{ active: tfMode === 'multi' }" @click="tfMode = 'multi'">多周期对比</button>
+      </div>
+      <template v-if="tfMode === 'single'">
+        <TimeframePicker :timeframes="timeframes" v-model="params.timeframe" @change="run" />
+      </template>
+      <template v-else>
+        <div class="multi-tf">
             <label v-for="tf in timeframes" :key="tf" class="tf-chip">
               <input type="checkbox" :value="tf" v-model="multiTfs" />
               <span>{{ tf }}</span>
@@ -337,6 +387,47 @@ function drawMultiChart() {
           <span>{{ activeStrategy.description }}</span>
         </div>
       </div>
+
+      <!-- 自定义代码面板 (可折叠) -->
+      <transition name="slide">
+        <div v-if="codePanelOpen" class="code-card">
+          <div class="code-header">
+            <div class="code-toolbar">
+              <div class="form-group">
+                <label>币种</label>
+                <select v-model="codeForm.symbol">
+                  <option v-for="s in allSymbols" :key="s" :value="s">{{ s }}</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>K线</label>
+                <TimeframePicker :timeframes="timeframes" v-model="codeForm.timeframe" />
+              </div>
+              <div class="form-group">
+                <label>区间</label>
+                <DateRangePicker v-model:start="codeForm.start_date" v-model:end="codeForm.end_date" default-range="3m" />
+              </div>
+              <button class="btn-primary" :disabled="codeLoading" @click="runCode">
+                {{ codeLoading ? '运行中...' : '▶ 运行回测' }}
+              </button>
+            </div>
+          </div>
+          <div class="editor-section">
+            <div class="editor-head">
+              <label class="editor-label">策略代码 (DSL)</label>
+              <div class="code-status" :class="codeValidation?.ok ? 'ok' : codeValidation?.error ? 'err' : ''">
+                <span v-if="codeValidation?.ok">✓ 语法正确{{ codeValidation.rules?.stop_loss ? ` · 止损 ${(codeValidation.rules.stop_loss*100).toFixed(0)}%` : '' }}{{ codeValidation.rules?.take_profit ? ` · 止盈 ${(codeValidation.rules.take_profit*100).toFixed(0)}%` : '' }}</span>
+                <span v-else-if="codeValidation?.error">✗ {{ codeValidation.error }}</span>
+                <span v-else class="muted">检测中...</span>
+              </div>
+            </div>
+            <textarea v-model="codeForm.code" class="code-input" rows="6"
+              placeholder="signal = CROSS_UP(MA(close, 7), MA(close, 25))"></textarea>
+            <div class="code-hint">signal = 表达式 (必需) | 止损/止盈/仓位/频率 (可选) · 改完自动校验</div>
+          </div>
+          <StateView :loading="codeLoading" :error="codeError" empty-text="点击「运行回测」查看结果" empty-icon="▶" v-if="codePanelOpen && !codeResult && !codeLoading && !codeError" />
+        </div>
+      </transition>
 
       <div class="metrics-grid" v-if="result">
         <MetricCard label="总收益" :value="metrics.total_return" highlight :help="HELP.total_return" />
@@ -429,77 +520,41 @@ function drawMultiChart() {
       </div>
 
       <StateView :loading="loading" :error="error" />
-    </template>
 
-    <!-- ========== 自定义代码模式 ========== -->
-    <template v-if="mode === 'code'">
-      <div class="code-card">
-        <div class="code-header">
-          <div class="code-toolbar">
-            <div class="form-group">
-              <label>币种</label>
-              <select v-model="codeForm.symbol">
-                <option v-for="s in allSymbols" :key="s" :value="s">{{ s }}</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>K线</label>
-              <TimeframePicker :timeframes="timeframes" v-model="codeForm.timeframe" />
-            </div>
-            <div class="form-group">
-              <label>区间</label>
-              <DateRangePicker v-model:start="codeForm.start_date" v-model:end="codeForm.end_date" default-range="3m" />
-            </div>
-            <button class="btn-primary" :disabled="codeLoading" @click="runCode">
-              {{ codeLoading ? '运行中...' : '▶ 运行回测' }}
-            </button>
+      <!-- 自定义代码回测结果 -->
+      <template v-if="codePanelOpen && codeResult">
+        <div class="card code-result-card">
+          <h3>🧪 自定义代码回测结果 ({{ codeForm.symbol }} · {{ codeForm.timeframe }})</h3>
+          <div class="metrics-grid" style="grid-template-columns: repeat(8, 1fr)">
+            <MetricCard label="总收益" :value="codeMetrics.total_return" highlight :help="HELP.total_return" />
+            <MetricCard label="年化" :value="codeMetrics.annual_return" :help="HELP.annual_return" />
+            <MetricCard label="夏普" :value="codeMetrics.sharpe" highlight fmt="num" :help="HELP.sharpe" />
+            <MetricCard label="最大回撤" :value="codeMetrics.max_drawdown" :help="HELP.max_drawdown" />
+            <MetricCard label="买入持有" :value="codeMetrics.benchmark_return" />
+            <MetricCard label="超额收益" :value="codeMetrics.excess_return" highlight :help="HELP.excess_return" />
+            <MetricCard label="胜率" :value="codeMetrics.win_rate" :help="HELP.win_rate" />
+            <MetricCard label="交易次数" :value="codeMetrics.trade_count" fmt="num" />
+          </div>
+          <div id="code-equity-chart" class="chart"></div>
+          <div v-if="codeResult.trades?.length" class="trades-section" style="background: transparent; border: 0; padding: 0; margin-top: 12px">
+            <h4>交易记录 ({{ codeResult.trades.length }})</h4>
+            <table>
+              <thead>
+                <tr><th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="t in codeResult.trades" :key="t.date">
+                  <td>{{ t.date }}</td>
+                  <td :class="t.side === 'buy' ? 'pos' : 'neg'">{{ t.side === 'buy' ? '买入' : '卖出' }}</td>
+                  <td>{{ fmtNum(t.price, 4) }}</td>
+                  <td>{{ fmtNum(t.amount, 4) }}</td>
+                  <td>{{ fmtNum(t.cost || t.value, 2) }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
-        <div class="editor-section">
-          <label class="editor-label">策略代码 (DSL)</label>
-          <textarea v-model="codeForm.code" class="code-input" rows="10"
-            placeholder="signal = CROSS_UP(MA(close, 7), MA(close, 25))"></textarea>
-          <div class="code-hint">signal = 表达式 (必需) | 止损/止盈/仓位/频率 (可选)</div>
-        </div>
-      </div>
-
-      <!-- 代码回测结果 -->
-      <template v-if="codeResult">
-        <div class="metrics-grid">
-          <MetricCard label="总收益" :value="codeMetrics.total_return" highlight :help="HELP.total_return" />
-          <MetricCard label="年化" :value="codeMetrics.annual_return" :help="HELP.annual_return" />
-          <MetricCard label="夏普" :value="codeMetrics.sharpe" highlight fmt="num" :help="HELP.sharpe" />
-          <MetricCard label="最大回撤" :value="codeMetrics.max_drawdown" :help="HELP.max_drawdown" />
-          <MetricCard label="买入持有" :value="codeMetrics.benchmark_return" />
-          <MetricCard label="超额收益" :value="codeMetrics.excess_return" highlight :help="HELP.excess_return" />
-          <MetricCard label="胜率" :value="codeMetrics.win_rate" :help="HELP.win_rate" />
-          <MetricCard label="交易次数" :value="codeMetrics.trade_count" fmt="num" />
-        </div>
-        <div id="code-equity-chart" class="chart"></div>
-
-        <div v-if="codeResult.trades?.length" class="trades-section">
-          <h3>交易记录 ({{ codeResult.trades.length }})</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="t in codeResult.trades" :key="t.date">
-                <td>{{ t.date }}</td>
-                <td :class="t.side === 'buy' ? 'pos' : 'neg'">{{ t.side === 'buy' ? '买入' : '卖出' }}</td>
-                <td>{{ fmtNum(t.price, 4) }}</td>
-                <td>{{ fmtNum(t.amount, 4) }}</td>
-                <td>{{ fmtNum(t.cost || t.value, 2) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
       </template>
-
-      <StateView :loading="codeLoading" :error="codeError" empty-text="编辑策略代码，点击运行回测" empty-icon="✏️" v-if="!codeResult && !codeLoading && !codeError" />
-    </template>
   </div>
 </template>
 
@@ -666,6 +721,41 @@ tr:hover td { background: var(--bg-elevated); }
 }
 .mode-tabs button:hover { background: var(--bg-elevated); }
 .mode-tabs button.active { background: var(--yellow); color: #000; font-weight: 600; }
+.code-toggle {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.code-toggle:hover { border-color: var(--yellow); }
+.code-toggle.active {
+  background: rgba(240,185,11,0.1);
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+.code-status {
+  font-size: 12px;
+  font-family: 'Consolas', monospace;
+}
+.code-status.ok { color: var(--green); }
+.code-status.err { color: var(--red); }
+.code-status .muted { color: var(--text-muted); }
+.editor-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.editor-label { font-size: 12px; color: var(--text-secondary); }
+.code-result-card h3 { font-size: 16px; margin-bottom: 12px; }
+.code-result-card h4 { font-size: 14px; margin-bottom: 8px; color: var(--text-secondary); }
+.slide-enter-active, .slide-leave-active { transition: opacity 0.2s, transform 0.2s; overflow: hidden; }
+.slide-enter-from, .slide-leave-to { opacity: 0; transform: translateY(-8px); }
 
 .code-card {
   background: var(--bg-card);
