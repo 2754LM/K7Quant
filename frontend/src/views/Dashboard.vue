@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed, watch, nextTick, onMounted, inject, provide } from 'vue'
-import { scanPool, runBacktest } from '../api'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
+import { scanPool, runBacktest, backtestCode } from '../api'
 import * as echarts from 'echarts'
 
 import MetricCard from '../components/MetricCard.vue'
@@ -12,6 +12,9 @@ import HelpTip from '../components/HelpTip.vue'
 const cfg = inject('cfg')
 const reloadCfg = inject('reload')
 
+const mode = ref('preset') // 'preset' | 'code'
+
+// ---------- 预设策略模式 ----------
 const params = ref({
   strategy_id: 1,
   timeframe: '4h',
@@ -50,9 +53,89 @@ watch(() => params.value.strategy_id, () => {
       }
     }
   }
-  run()
+  if (mode.value === 'preset') run()
 }, { immediate: false })
 
+// ---------- 自定义代码模式 ----------
+const codeForm = ref({
+  code: 'signal = CROSS_UP(MA(close, 7), MA(close, 25))\n止损 = 0.05\n止盈 = 0.10\n仓位 = 1.0',
+  symbol: 'BTCUSDT',
+  timeframe: '4h',
+  start_date: '20240101',
+  end_date: '20250601',
+  params: {},
+})
+const codeResult = ref(null)
+const codeLoading = ref(false)
+const codeError = ref('')
+let codeChart = null
+
+const allSymbols = computed(() => (cfg.value?.symbols || []).map(s => s.symbol))
+
+async function runCode() {
+  codeLoading.value = true
+  codeError.value = ''
+  codeResult.value = null
+  try {
+    const res = await backtestCode({
+      code: codeForm.value.code,
+      symbol: codeForm.value.symbol,
+      timeframe: codeForm.value.timeframe,
+      start_date: codeForm.value.start_date,
+      end_date: codeForm.value.end_date,
+      params: codeForm.value.params,
+    })
+    codeResult.value = res.data
+    await nextTick()
+    drawCodeChart()
+  } catch (e) {
+    codeError.value = e.message
+  } finally {
+    codeLoading.value = false
+  }
+}
+
+function drawCodeChart() {
+  if (!codeResult.value?.equity?.length) return
+  const el = document.getElementById('code-equity-chart')
+  if (!el) return
+  if (!codeChart) codeChart = echarts.init(el, null, { renderer: 'canvas' })
+  const startEq = codeResult.value.equity[0].equity
+  const equity = codeResult.value.equity.map(r => [r.date, r.equity / startEq])
+  const series = [{
+    name: '策略', type: 'line', data: equity, smooth: true, showSymbol: false,
+    lineStyle: { width: 2.5, color: '#f0b90b' },
+    areaStyle: { color: 'rgba(240,185,11,0.08)' }
+  }]
+  if (codeResult.value.benchmark?.length) {
+    const b0 = codeResult.value.benchmark[0].nav
+    const bm = codeResult.value.benchmark.map(r => [r.date, r.nav / b0])
+    series.push({ name: '买入持有', type: 'line', data: bm, smooth: true, showSymbol: false,
+      lineStyle: { width: 1.5, color: '#f7931a' } })
+  }
+  codeChart.setOption({
+    backgroundColor: 'transparent',
+    title: { text: `${codeForm.value.symbol} · ${codeForm.value.timeframe}`,
+      left: 'center', textStyle: { color: '#eaecef', fontSize: 14 } },
+    tooltip: { trigger: 'axis', backgroundColor: '#181a20', borderColor: '#2b3139',
+      textStyle: { color: '#eaecef' }, valueFormatter: v => (v * 100).toFixed(2) + '%' },
+    legend: { data: ['策略', '买入持有'], top: 30, textStyle: { color: '#b7bdc6' } },
+    grid: { left: 60, right: 30, top: 80, bottom: 60 },
+    xAxis: { type: 'time', axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' } },
+    yAxis: { type: 'value', axisLine: { lineStyle: { color: '#474d57' } },
+      axisLabel: { color: '#b7bdc6', formatter: v => (v * 100).toFixed(0) + '%' },
+      splitLine: { lineStyle: { color: '#2b3139' } } },
+    series,
+    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 20, bottom: 10, backgroundColor: '#181a20' }]
+  })
+}
+
+const codeMetrics = computed(() => {
+  const m = codeResult.value?.metrics || {}
+  return m
+})
+
+// ---------- 共享 ----------
 const metrics = computed(() => result.value?.combined_metrics || {})
 const ranking = computed(() => {
   if (!result.value?.ranking) return []
@@ -140,98 +223,182 @@ function drawChart() {
   })
 }
 
-window.addEventListener('resize', () => chart?.resize())
+function onResize() { chart?.resize(); codeChart?.resize() }
+window.addEventListener('resize', onResize)
+onUnmounted(() => window.removeEventListener('resize', onResize))
 </script>
 
 <template>
   <div class="dashboard">
-    <div class="top-bar">
-      <StrategyPicker :strategies="strategies" v-model="params.strategy_id" @change="run" />
-      <TimeframePicker :timeframes="timeframes" v-model="params.timeframe" @change="run" />
-      <button class="btn-primary" :disabled="loading" @click="run">
-        {{ loading ? '运行中...' : '重新扫描' }}
-      </button>
+    <div class="mode-tabs">
+      <button :class="{ active: mode === 'preset' }" @click="mode = 'preset'">📦 预设策略</button>
+      <button :class="{ active: mode === 'code' }" @click="mode = 'code'">✏️ 自定义代码</button>
     </div>
 
-    <div class="config-row">
-      <div v-for="key in (STRATEGY_FIELDS[activeStrategy?.id] || [])" :key="key" class="cfg">
-        <label>{{ activeStrategy?.params_schema?.[key]?.label || key }}</label>
-        <input type="number" v-model.number="params[key]"
-          :min="activeStrategy?.params_schema?.[key]?.min"
-          :max="activeStrategy?.params_schema?.[key]?.max"
-          @change="run" />
+    <!-- ========== 预设策略模式 ========== -->
+    <template v-if="mode === 'preset'">
+      <div class="top-bar">
+        <StrategyPicker :strategies="strategies" v-model="params.strategy_id" @change="run" />
+        <TimeframePicker :timeframes="timeframes" v-model="params.timeframe" @change="run" />
+        <button class="btn-primary" :disabled="loading" @click="run">
+          {{ loading ? '运行中...' : '重新扫描' }}
+        </button>
       </div>
-      <div class="cfg">
-        <label>开始</label>
-        <input type="text" v-model="params.start_date" @change="run" />
+
+      <div class="config-row">
+        <div v-for="key in (STRATEGY_FIELDS[activeStrategy?.id] || [])" :key="key" class="cfg">
+          <label>{{ activeStrategy?.params_schema?.[key]?.label || key }}</label>
+          <input type="number" v-model.number="params[key]"
+            :min="activeStrategy?.params_schema?.[key]?.min"
+            :max="activeStrategy?.params_schema?.[key]?.max"
+            @change="run" />
+        </div>
+        <div class="cfg">
+          <label>开始</label>
+          <input type="text" v-model="params.start_date" @change="run" />
+        </div>
+        <div class="cfg">
+          <label>结束</label>
+          <input type="text" v-model="params.end_date" @change="run" />
+        </div>
+        <div v-if="activeStrategy?.description" class="desc-box">
+          <span>💡</span>
+          <span>{{ activeStrategy.description }}</span>
+        </div>
       </div>
-      <div class="cfg">
-        <label>结束</label>
-        <input type="text" v-model="params.end_date" @change="run" />
+
+      <div class="metrics-grid" v-if="result">
+        <MetricCard label="总收益" :value="metrics.total_return" highlight :help="HELP.total_return" />
+        <MetricCard label="年化" :value="metrics.annual_return" :help="HELP.annual_return" />
+        <MetricCard label="夏普" :value="metrics.sharpe" highlight fmt="num" :help="HELP.sharpe" />
+        <MetricCard label="最大回撤" :value="metrics.max_drawdown" :help="HELP.max_drawdown" />
+        <MetricCard label="BTC 同期" :value="metrics.benchmark_return" />
+        <MetricCard label="超额收益" :value="metrics.excess_return" highlight :help="HELP.excess_return" />
+        <MetricCard label="胜率" :value="metrics.win_rate" :help="HELP.win_rate" />
+        <MetricCard label="信息比率" :value="metrics.information_ratio" fmt="num" :help="HELP.information_ratio" />
       </div>
-      <div v-if="activeStrategy?.description" class="desc-box">
-        <span>💡</span>
-        <span>{{ activeStrategy.description }}</span>
+
+      <div v-if="!result && !loading && !error" class="empty-state">
+        <div class="icon">📈</div>
+        <div>选择策略 + K线周期, 自动扫描全池</div>
       </div>
-    </div>
 
-    <div class="metrics-grid" v-if="result">
-      <MetricCard label="总收益" :value="metrics.total_return" highlight :help="HELP.total_return" />
-      <MetricCard label="年化" :value="metrics.annual_return" :help="HELP.annual_return" />
-      <MetricCard label="夏普" :value="metrics.sharpe" highlight fmt="num" :help="HELP.sharpe" />
-      <MetricCard label="最大回撤" :value="metrics.max_drawdown" :help="HELP.max_drawdown" />
-      <MetricCard label="BTC 同期" :value="metrics.benchmark_return" />
-      <MetricCard label="超额收益" :value="metrics.excess_return" highlight :help="HELP.excess_return" />
-      <MetricCard label="胜率" :value="metrics.win_rate" :help="HELP.win_rate" />
-      <MetricCard label="信息比率" :value="metrics.information_ratio" fmt="num" :help="HELP.information_ratio" />
-    </div>
+      <div v-if="result" id="equity-chart" class="chart"></div>
 
-    <div v-if="!result && !loading && !error" class="empty-state">
-      <div class="icon">📈</div>
-      <div>选择策略 + K线周期, 自动扫描全池</div>
-    </div>
-
-    <div v-if="result" id="equity-chart" class="chart"></div>
-
-    <div v-if="result" class="ranking-section">
-      <div class="ranking-header">
-        <h3>单币表现排名 ({{ result.count }})</h3>
-        <div class="sort-tip">点击表头切换排序</div>
+      <div v-if="result" class="ranking-section">
+        <div class="ranking-header">
+          <h3>单币表现排名 ({{ result.count }})</h3>
+          <div class="sort-tip">点击表头切换排序</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>币种</th>
+              <th>名称</th>
+              <th class="sortable" @click="sortBy('total_return')">总收益 {{ sortKey==='total_return' ? (sortDir==='desc'?'↓':'↑') : '' }}</th>
+              <th class="sortable" @click="sortBy('sharpe')">夏普 {{ sortKey==='sharpe' ? (sortDir==='desc'?'↓':'↑') : '' }}</th>
+              <th class="sortable" @click="sortBy('calmar')">Calmar</th>
+              <th class="sortable" @click="sortBy('max_drawdown')">回撤</th>
+              <th class="sortable" @click="sortBy('win_rate')">胜率</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(r, i) in ranking" :key="r.symbol" :class="{ top: i < 3 }">
+              <td class="rank">
+                <span v-if="i === 0">🥇</span>
+                <span v-else-if="i === 1">🥈</span>
+                <span v-else-if="i === 2">🥉</span>
+                <span v-else>{{ i + 1 }}</span>
+              </td>
+              <td class="sym-cell">{{ r.symbol }}</td>
+              <td class="name-cell">{{ symbolInfo[r.symbol]?.name_zh || '—' }}</td>
+              <td :class="r.total_return >= 0 ? 'pos' : 'neg'">{{ fmtPct(r.total_return) }}</td>
+              <td :class="r.sharpe >= 1 ? 'pos' : r.sharpe < 0 ? 'neg' : ''">{{ fmtNum(r.sharpe) }}</td>
+              <td :class="r.calmar >= 1 ? 'pos' : ''">{{ fmtNum(r.calmar) }}</td>
+              <td class="neg">{{ fmtPct(r.max_drawdown) }}</td>
+              <td>{{ fmtPct(r.win_rate) }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>币种</th>
-            <th>名称</th>
-            <th class="sortable" @click="sortBy('total_return')">总收益 {{ sortKey==='total_return' ? (sortDir==='desc'?'↓':'↑') : '' }}</th>
-            <th class="sortable" @click="sortBy('sharpe')">夏普 {{ sortKey==='sharpe' ? (sortDir==='desc'?'↓':'↑') : '' }}</th>
-            <th class="sortable" @click="sortBy('calmar')">Calmar</th>
-            <th class="sortable" @click="sortBy('max_drawdown')">回撤</th>
-            <th class="sortable" @click="sortBy('win_rate')">胜率</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(r, i) in ranking" :key="r.symbol" :class="{ top: i < 3 }">
-            <td class="rank">
-              <span v-if="i === 0">🥇</span>
-              <span v-else-if="i === 1">🥈</span>
-              <span v-else-if="i === 2">🥉</span>
-              <span v-else>{{ i + 1 }}</span>
-            </td>
-            <td class="sym-cell">{{ r.symbol }}</td>
-            <td class="name-cell">{{ symbolInfo[r.symbol]?.name_zh || '—' }}</td>
-            <td :class="r.total_return >= 0 ? 'pos' : 'neg'">{{ fmtPct(r.total_return) }}</td>
-            <td :class="r.sharpe >= 1 ? 'pos' : r.sharpe < 0 ? 'neg' : ''">{{ fmtNum(r.sharpe) }}</td>
-            <td :class="r.calmar >= 1 ? 'pos' : ''">{{ fmtNum(r.calmar) }}</td>
-            <td class="neg">{{ fmtPct(r.max_drawdown) }}</td>
-            <td>{{ fmtPct(r.win_rate) }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
 
-    <StateView :loading="loading" :error="error" />
+      <StateView :loading="loading" :error="error" />
+    </template>
+
+    <!-- ========== 自定义代码模式 ========== -->
+    <template v-if="mode === 'code'">
+      <div class="code-card">
+        <div class="code-header">
+          <div class="code-toolbar">
+            <div class="form-group">
+              <label>币种</label>
+              <select v-model="codeForm.symbol">
+                <option v-for="s in allSymbols" :key="s" :value="s">{{ s }}</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>K线</label>
+              <TimeframePicker :timeframes="timeframes" v-model="codeForm.timeframe" />
+            </div>
+            <div class="form-group">
+              <label>开始</label>
+              <input type="text" v-model="codeForm.start_date" />
+            </div>
+            <div class="form-group">
+              <label>结束</label>
+              <input type="text" v-model="codeForm.end_date" />
+            </div>
+            <button class="btn-primary" :disabled="codeLoading" @click="runCode">
+              {{ codeLoading ? '运行中...' : '▶ 运行回测' }}
+            </button>
+          </div>
+        </div>
+        <div class="editor-section">
+          <label class="editor-label">策略代码 (DSL)</label>
+          <textarea v-model="codeForm.code" class="code-input" rows="10"
+            placeholder="signal = CROSS_UP(MA(close, 7), MA(close, 25))"></textarea>
+          <div class="code-hint">signal = 表达式 (必需) | 止损/止盈/仓位/频率 (可选)</div>
+        </div>
+      </div>
+
+      <!-- 代码回测结果 -->
+      <template v-if="codeResult">
+        <div class="metrics-grid">
+          <MetricCard label="总收益" :value="codeMetrics.total_return" highlight :help="HELP.total_return" />
+          <MetricCard label="年化" :value="codeMetrics.annual_return" :help="HELP.annual_return" />
+          <MetricCard label="夏普" :value="codeMetrics.sharpe" highlight fmt="num" :help="HELP.sharpe" />
+          <MetricCard label="最大回撤" :value="codeMetrics.max_drawdown" :help="HELP.max_drawdown" />
+          <MetricCard label="买入持有" :value="codeMetrics.benchmark_return" />
+          <MetricCard label="超额收益" :value="codeMetrics.excess_return" highlight :help="HELP.excess_return" />
+          <MetricCard label="胜率" :value="codeMetrics.win_rate" :help="HELP.win_rate" />
+          <MetricCard label="交易次数" :value="codeMetrics.trade_count" fmt="num" />
+        </div>
+        <div id="code-equity-chart" class="chart"></div>
+
+        <div v-if="codeResult.trades?.length" class="trades-section">
+          <h3>交易记录 ({{ codeResult.trades.length }})</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="t in codeResult.trades" :key="t.date">
+                <td>{{ t.date }}</td>
+                <td :class="t.side === 'buy' ? 'pos' : 'neg'">{{ t.side === 'buy' ? '买入' : '卖出' }}</td>
+                <td>{{ fmtNum(t.price, 4) }}</td>
+                <td>{{ fmtNum(t.amount, 4) }}</td>
+                <td>{{ fmtNum(t.cost || t.value, 2) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+
+      <StateView :loading="codeLoading" :error="codeError" empty-text="编辑策略代码，点击运行回测" empty-icon="✏️" v-if="!codeResult && !codeLoading && !codeError" />
+    </template>
   </div>
 </template>
 
@@ -335,6 +502,72 @@ tr:hover td { background: var(--bg-elevated); }
 .name-cell { color: var(--text-secondary); font-family: inherit; font-size: 12px; }
 .pos { color: var(--green); }
 .neg { color: var(--red); }
+.mode-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+}
+.mode-tabs button {
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.mode-tabs button:hover { background: var(--bg-elevated); }
+.mode-tabs button.active { background: var(--yellow); color: #000; font-weight: 600; }
+
+.code-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.code-header { margin-bottom: 16px; }
+.code-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.code-toolbar .form-group { display: flex; flex-direction: column; gap: 4px; }
+.code-toolbar .form-group label { font-size: 11px; color: var(--text-secondary); }
+.code-toolbar .form-group input, .code-toolbar .form-group select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.editor-section { margin-top: 12px; }
+.editor-label { font-size: 12px; color: var(--text-secondary); display: block; margin-bottom: 6px; }
+.code-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: 'Consolas', monospace;
+  line-height: 1.6;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.code-input:focus { border-color: var(--yellow); }
+.code-hint { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+.trades-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.trades-section h3 { font-size: 16px; margin-bottom: 12px; }
+
 @media (max-width: 1280px) {
   .metrics-grid { grid-template-columns: repeat(4, 1fr); }
 }
