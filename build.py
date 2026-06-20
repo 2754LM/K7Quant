@@ -1,4 +1,4 @@
-"""PyInstaller 打包"""
+"""PyInstaller 打包成单 EXE"""
 import os
 import subprocess
 import sys
@@ -25,17 +25,34 @@ def build_exe():
     cmd = [
         py, "--name=K7Quant", "--onefile", "--noconsole",
         "--add-data=frontend/dist;frontend/dist",
+        "--add-data=config;config",
         "--add-data=quant_core;quant_core",
         "--hidden-import=quant_core",
-        "--hidden-import=quant_core.config",
+        "--hidden-import=quant_core.settings",
         "--hidden-import=quant_core.data.fetcher",
+        "--hidden-import=quant_core.data.cache",
+        "--hidden-import=quant_core.data.access",
+        "--hidden-import=quant_core.strategies",
+        "--hidden-import=quant_core.strategies.base",
+        "--hidden-import=quant_core.strategies.ma_cross",
+        "--hidden-import=quant_core.strategies.momentum_rotation",
+        "--hidden-import=quant_core.strategies.rsi",
+        "--hidden-import=quant_core.strategies.macd",
         "--hidden-import=quant_core.backtest",
+        "--hidden-import=quant_core.backtest.engine",
+        "--hidden-import=quant_core.backtest.metrics",
         "--hidden-import=backend.app",
         "--hidden-import=backend.services.backtest_service",
+        "--hidden-import=backend.services.data_service",
+        "--hidden-import=backend.services.config_service",
+        "--hidden-import=backend.services.helpers",
+        "--hidden-import=backend.routers.backtest",
+        "--hidden-import=backend.routers.data",
+        "--hidden-import=backend.routers.config",
         "run.py",
     ]
     subprocess.check_call(cmd, cwd=ROOT)
-    print(f"\n✅ 完成: {ROOT}\\dist\\K7Quant.exe")
+    print(f"\n完成: {ROOT}\\dist\\K7Quant.exe")
 
 
 if __name__ == "__main__":

@@ -19,9 +19,8 @@ if not exist venv (
 echo [2/3] 安装 Python 依赖...
 venv\Scripts\python.exe -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
 venv\Scripts\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-venv\Scripts\python.exe -m pip install -r backend\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-echo [3/3] 安装前端依赖...
+echo [3/3] 安装前端依赖并构建...
 cd frontend
 call npm install --registry https://registry.npmmirror.com
 call npm run build

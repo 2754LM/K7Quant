@@ -3,6 +3,8 @@ import { ref, computed, watch, nextTick } from 'vue'
 import { getKline } from '../api'
 import * as echarts from 'echarts'
 
+import TimeframePicker from '../components/TimeframePicker.vue'
+
 const props = defineProps({ cfg: Object })
 
 const symbol = ref('BTCUSDT')
@@ -16,7 +18,21 @@ const tableView = ref('chart')
 const visibleMA = ref({ ma7: true, ma25: true, ma99: false })
 let chart = null
 
-const timeframes = computed(() => props.cfg?.timeframes || ['1d'])
+const symbolInfo = computed(() => {
+  const m = {}
+  for (const s of props.cfg?.symbols || []) m[s.symbol] = s
+  return m
+})
+
+const timeframes = computed(() => props.cfg?.settings?.timeframes || ['1d'])
+const allSymbols = computed(() => (props.cfg?.symbols || []).map(s => s.symbol))
+
+const curInfo = computed(() => symbolInfo.value[symbol.value] || {})
+const stats = computed(() => data.value?.stats || {})
+const tableRows = computed(() => {
+  if (!data.value?.kline) return []
+  return data.value.kline.slice(-200).reverse()
+})
 
 watch([symbol, timeframe], () => load())
 watch(visibleMA, () => drawChart(), { deep: true })
@@ -35,7 +51,7 @@ async function load() {
       drawChart()
     }
   } catch (e) {
-    error.value = e?.response?.data?.detail || e.message
+    error.value = e.message
   } finally {
     loading.value = false
   }
@@ -46,59 +62,36 @@ function drawChart() {
   const el = document.getElementById('kline-chart')
   if (!el) return
   if (!chart) chart = echarts.init(el, 'dark')
-
   const dates = data.value.kline.map(k => k.date)
   const kValues = data.value.kline.map((k, i) => [i, k.open, k.close, k.low, k.high])
-
   const series = [{
-    name: 'K线',
-    type: 'candlestick',
-    data: kValues,
-    itemStyle: {
-      color: '#02c076', color0: '#f6465d',
-      borderColor: '#02c076', borderColor0: '#f6465d'
-    }
+    name: 'K线', type: 'candlestick', data: kValues,
+    itemStyle: { color: '#02c076', color0: '#f6465d', borderColor: '#02c076', borderColor0: '#f6465d' }
   }]
-
   for (const k of ['ma7', 'ma25', 'ma99']) {
     if (!visibleMA.value[k]) continue
     series.push({
-      name: k.toUpperCase(),
-      type: 'line',
+      name: k.toUpperCase(), type: 'line',
       data: data.value.kline.map((row, i) => row[k] ? [i, row[k]] : null),
-      smooth: true,
-      showSymbol: false,
-      lineStyle: { width: 1.2 }
+      smooth: true, showSymbol: false, lineStyle: { width: 1.2 }
     })
   }
-
   chart.setOption({
     backgroundColor: 'transparent',
-    title: { text: `${symbol.value} · ${timeframe.value}`, left: 'center', textStyle: { color: '#eaecef', fontSize: 14 } },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, backgroundColor: '#181a20', borderColor: '#474d57', textStyle: { color: '#eaecef' } },
+    title: { text: `${symbol.value} · ${curInfo.value.name_zh || ''} (${timeframe.value})`,
+      left: 'center', textStyle: { color: '#eaecef', fontSize: 14 } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' },
+      backgroundColor: '#181a20', borderColor: '#474d57', textStyle: { color: '#eaecef' } },
     legend: { data: ['K线', 'MA7', 'MA25', 'MA99'], top: 30, textStyle: { color: '#b7bdc6' } },
     grid: { left: 60, right: 30, top: 80, bottom: 60 },
-    xAxis: {
-      type: 'category', data: dates,
-      axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' }
-    },
+    xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' } },
     yAxis: { scale: true, axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' }, splitLine: { lineStyle: { color: '#2b3139' } } },
-    dataZoom: [
-      { type: 'inside', xAxisIndex: 0 },
-      { type: 'slider', xAxisIndex: 0, height: 20, bottom: 10, backgroundColor: '#181a20' }
-    ],
+    dataZoom: [{ type: 'inside', xAxisIndex: 0 }, { type: 'slider', xAxisIndex: 0, height: 20, bottom: 10, backgroundColor: '#181a20' }],
     series
   })
 }
 
 window.addEventListener('resize', () => chart?.resize())
-
-const tableRows = computed(() => {
-  if (!data.value?.kline) return []
-  return data.value.kline.slice(-200).reverse()
-})
-
-const stats = computed(() => data.value?.stats || {})
 
 function fmt(v, d = 2) { return v === null || v === undefined ? '-' : Number(v).toFixed(d) }
 function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFixed(2) + '%' }
@@ -106,14 +99,31 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
 
 <template>
   <div class="kline-view">
+    <div class="info-card" v-if="curInfo.symbol">
+      <div class="info-header">
+        <div>
+          <h2>{{ curInfo.name_zh }} <span class="en">{{ curInfo.name_en }}</span></h2>
+          <div class="meta">
+            <span class="badge">{{ curInfo.symbol }}</span>
+            <span class="badge category">{{ curInfo.category }}</span>
+            <span class="badge rank">市值 #{{ curInfo.market_cap_rank }}</span>
+          </div>
+        </div>
+      </div>
+      <p class="desc">{{ curInfo.description }}</p>
+      <div class="tags">
+        <span v-for="t in curInfo.tags" :key="t" class="tag">#{{ t }}</span>
+      </div>
+    </div>
+
     <div class="toolbar">
       <div class="toolbar-left">
         <select v-model="symbol">
-          <option v-for="s in cfg.symbols" :key="s" :value="s">{{ s }}</option>
+          <option v-for="s in allSymbols" :key="s" :value="s">
+            {{ s }} {{ symbolInfo[s]?.name_zh || '' }}
+          </option>
         </select>
-        <select v-model="timeframe">
-          <option v-for="tf in timeframes" :key="tf" :value="tf">{{ tf }}</option>
-        </select>
+        <TimeframePicker :timeframes="timeframes" v-model="timeframe" />
         <input type="text" v-model="startDate" placeholder="开始" />
         <span>→</span>
         <input type="text" v-model="endDate" placeholder="结束" />
@@ -126,10 +136,10 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
 
     <div class="stats-row" v-if="stats.rows">
       <div class="stat"><span class="lbl">数据点</span><span class="val">{{ stats.rows }}</span></div>
-      <div class="stat"><span class="lbl">区间</span><span class="val">{{ stats.start }} → {{ stats.end }}</span></div>
-      <div class="stat"><span class="lbl">首日收盘</span><span class="val">{{ fmt(stats.first_close) }}</span></div>
-      <div class="stat"><span class="lbl">最新收盘</span><span class="val">{{ fmt(stats.last_close) }}</span></div>
-      <div class="stat"><span class="lbl">区间涨跌</span><span class="val" :class="stats.period_return >= 0 ? 'pos' : 'neg'">{{ fmtPct(stats.period_return) }}</span></div>
+      <div class="stat"><span class="lbl">区间</span><span class="val small">{{ stats.start }} → {{ stats.end }}</span></div>
+      <div class="stat"><span class="lbl">首日</span><span class="val">{{ fmt(stats.first_close) }}</span></div>
+      <div class="stat"><span class="lbl">最新</span><span class="val">{{ fmt(stats.last_close) }}</span></div>
+      <div class="stat"><span class="lbl">涨跌</span><span class="val" :class="stats.period_return >= 0 ? 'pos' : 'neg'">{{ fmtPct(stats.period_return) }}</span></div>
       <div class="stat"><span class="lbl">最高</span><span class="val">{{ fmt(stats.max_price) }}</span></div>
       <div class="stat"><span class="lbl">最低</span><span class="val">{{ fmt(stats.min_price) }}</span></div>
     </div>
@@ -173,16 +183,54 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
 
 <style scoped>
 .kline-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.info-card {
   background: var(--binance-card);
   border: 1px solid var(--binance-border);
   border-radius: 12px;
-  padding: 20px;
+  padding: 20px 24px;
 }
+.info-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.info-header h2 { font-size: 24px; color: var(--binance-yellow); }
+.info-header .en { font-size: 14px; color: var(--binance-text-secondary); font-weight: 400; margin-left: 8px; }
+.meta { display: flex; gap: 8px; margin-top: 8px; }
+.badge {
+  background: #2b3139;
+  color: var(--binance-text-secondary);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'Consolas', monospace;
+}
+.badge.category { background: #1e88e522; color: #64b5f6; }
+.badge.rank { background: #f0b90b22; color: var(--binance-yellow); }
+.desc {
+  font-size: 13px;
+  color: var(--binance-text-secondary);
+  line-height: 1.7;
+  margin-bottom: 12px;
+  white-space: pre-line;
+}
+.tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.tag {
+  background: #0b0e11;
+  color: var(--binance-yellow);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
 .toolbar {
+  background: var(--binance-card);
+  border: 1px solid var(--binance-border);
+  border-radius: 12px;
+  padding: 12px 16px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
   flex-wrap: wrap;
   gap: 12px;
 }
@@ -209,10 +257,9 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 10px;
-  margin-bottom: 16px;
 }
 .stat {
-  background: #0b0e11;
+  background: var(--binance-card);
   border: 1px solid var(--binance-border);
   padding: 10px 12px;
   border-radius: 6px;
@@ -222,12 +269,14 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
 }
 .stat .lbl { font-size: 11px; color: var(--binance-text-secondary); }
 .stat .val { font-size: 14px; font-weight: 600; font-family: 'Consolas', monospace; }
+.stat .val.small { font-size: 11px; }
 .val.pos { color: var(--binance-green); }
 .val.neg { color: var(--binance-red); }
 
 .chart-area {
-  background: #0b0e11;
-  border-radius: 8px;
+  background: var(--binance-card);
+  border: 1px solid var(--binance-border);
+  border-radius: 12px;
   padding: 12px;
 }
 .ma-toggles {
@@ -250,6 +299,7 @@ function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFi
 .table-area {
   max-height: 600px;
   overflow: auto;
+  background: var(--binance-card);
   border: 1px solid var(--binance-border);
   border-radius: 8px;
 }
@@ -259,7 +309,7 @@ th {
   padding: 10px 12px;
   background: #0b0e11;
   color: var(--binance-text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   border-bottom: 1px solid var(--binance-border);
   position: sticky;
@@ -277,7 +327,6 @@ tr:hover td { background: #181a20; }
 .neg { color: var(--binance-red); }
 
 .error {
-  margin-top: 12px;
   padding: 12px;
   background: #f6465d22;
   border: 1px solid #f6465d;

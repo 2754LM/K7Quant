@@ -18,6 +18,12 @@ const indicators = [
   { icon: '🌊', name: '波动率', short: '价格上下蹦跶的剧烈程度',
     long: '收益率的标准差 × √年化系数。币圈波动远高于股市。',
     usage: 'BTC 50% 正常，山寨币 100%+ 是常态', tip: '高波动 ≠ 高收益' },
+  { icon: '🎯', name: 'Calmar', short: '收益 / 最大回撤',
+    long: '年化收益除以最大回撤的绝对值。衡量"冒着多大风险赚的钱"。',
+    usage: '> 1.5 优秀，> 3 神级', tip: '比 Sharpe 更直观' },
+  { icon: '✅', name: '胜率', short: '赚钱的 K 线占比',
+    long: '收益为正的 K 线数 / 总交易 K 线数。',
+    usage: '> 50% 较好，但胜率高不等于赚钱多', tip: '盈亏比更重要' },
 ]
 
 const concepts = [

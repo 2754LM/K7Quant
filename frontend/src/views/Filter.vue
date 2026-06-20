@@ -1,13 +1,19 @@
 <script setup>
 import { ref } from 'vue'
-import { filterStocks } from '../api'
+import { filterSymbols } from '../api'
+
+import StrategyPicker from '../components/StrategyPicker.vue'
+import TimeframePicker from '../components/TimeframePicker.vue'
+
+const props = defineProps({ cfg: Object })
 
 const params = ref({
+  strategy: 'ma_cross',
   timeframe: '1d',
   start_date: '20240101', end_date: '20250601',
   min_return: -1.0, max_return: 100.0,
   min_price: 0, max_price: 1e12,
-  min_sharpe: -10, strategy: 'ma_cross',
+  min_sharpe: 0,
 })
 
 const results = ref([])
@@ -15,30 +21,39 @@ const loading = ref(false)
 const error = ref('')
 const count = ref(0)
 
+const symbolInfo = computed(() => {
+  const m = {}
+  for (const s of props.cfg?.symbols || []) m[s.symbol] = s
+  return m
+})
+
 const presets = [
-  { name: '🚀 牛市赢家', min_return: 0.5, min_sharpe: 0.5 },
-  { name: '🛡️ 防御币种', min_return: -0.3, max_return: 0.3, min_sharpe: 0 },
-  { name: '💎 高夏普', min_return: -0.3, min_sharpe: 1 },
-  { name: '🐋 低价币', max_price: 1 },
-  { name: '💰 中价币', min_price: 1, max_price: 100 },
+  { name: '🚀 牛市赢家', patch: { min_return: 0.5, min_sharpe: 0.5 } },
+  { name: '🛡️ 防御币种', patch: { min_return: -0.3, max_return: 0.3, min_sharpe: 0 } },
+  { name: '💎 高夏普', patch: { min_return: -0.3, min_sharpe: 1 } },
+  { name: '🐋 低价币 (< $1)', patch: { max_price: 1 } },
+  { name: '💰 中价币 ($1-$100)', patch: { min_price: 1, max_price: 100 } },
+  { name: '🏔️ 高价币 (> $1000)', patch: { min_price: 1000 } },
 ]
+
+import { computed } from 'vue'
 
 async function run() {
   loading.value = true
   error.value = ''
   try {
-    const res = await filterStocks(params.value)
+    const res = await filterSymbols(params.value)
     results.value = res.data.results
     count.value = res.data.count
   } catch (e) {
-    error.value = e?.response?.data?.detail || e.message
+    error.value = e.message
   } finally {
     loading.value = false
   }
 }
 
 function applyPreset(p) {
-  Object.assign(params.value, p)
+  Object.assign(params.value, p.patch)
   run()
 }
 
@@ -58,18 +73,17 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
       <h3>筛选条件</h3>
       <div class="form-grid">
         <div class="form-row">
+          <label>策略</label>
+          <StrategyPicker :strategies="cfg.strategies" v-model="params.strategy" @change="run" />
+        </div>
+        <div class="form-row">
           <label>K线周期</label>
-          <select v-model="params.timeframe">
-            <option value="1h">1h</option>
-            <option value="4h">4h</option>
-            <option value="1d">1d</option>
-            <option value="1w">1w</option>
-          </select>
+          <TimeframePicker :timeframes="cfg.settings.timeframes" v-model="params.timeframe" />
         </div>
         <div class="form-row">
           <label>区间最低涨幅</label>
           <input type="number" v-model.number="params.min_return" step="0.1" />
-          <span class="hint">-1 = 跌100%, 0 = 不跌, 0.5 = 涨50%</span>
+          <span class="hint">-1 = 跌100%, 0.5 = 涨50%</span>
         </div>
         <div class="form-row">
           <label>区间最高涨幅</label>
@@ -87,7 +101,7 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
         <div class="form-row">
           <label>最低夏普</label>
           <input type="number" v-model.number="params.min_sharpe" step="0.1" />
-          <span class="hint">&gt;1 为优秀, &gt;0 为正期望</span>
+          <span class="hint">&gt;1 优秀, &gt;0 正期望</span>
         </div>
         <div class="form-row">
           <label>开始</label>
@@ -109,14 +123,17 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
       <table>
         <thead>
           <tr>
-            <th>#</th><th>币种</th><th>当前价</th><th>区间涨跌</th><th>夏普</th>
+            <th>#</th><th>币种</th><th>名称</th><th>分类</th>
+            <th>当前价</th><th>区间涨跌</th><th>夏普</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="(r, i) in results" :key="r.symbol" :class="{ top: i < 3 }">
             <td>{{ i + 1 }}</td>
             <td class="sym-cell">{{ r.symbol }}</td>
-            <td>{{ fmt(r.last_close) }}</td>
+            <td class="name-cell">{{ symbolInfo[r.symbol]?.name_zh || '—' }}</td>
+            <td><span class="cat-badge">{{ symbolInfo[r.symbol]?.category || '—' }}</span></td>
+            <td>${{ fmt(r.last_close) }}</td>
             <td :class="r.period_return >= 0 ? 'pos' : 'neg'">{{ fmt(r.period_return) }}%</td>
             <td :class="r.sharpe >= 1 ? 'pos' : r.sharpe < 0 ? 'neg' : ''">{{ fmt(r.sharpe) }}</td>
           </tr>
@@ -160,13 +177,13 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
 .config-card h3 { font-size: 16px; margin-bottom: 16px; }
 .form-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 16px;
 }
 .form-row { display: flex; flex-direction: column; gap: 4px; }
 .form-row label { font-size: 12px; color: var(--binance-text-secondary); }
-.form-row input, .form-row select {
+.form-row input {
   background: #0b0e11;
   border: 1px solid var(--binance-border);
   color: var(--binance-text);
@@ -174,7 +191,7 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
   border-radius: 6px;
   font-size: 13px;
 }
-.form-row input:focus, .form-row select:focus { border-color: var(--binance-yellow); }
+.form-row input:focus { border-color: var(--binance-yellow); }
 .form-row .hint { font-size: 11px; color: #707684; }
 .run-btn {
   background: var(--binance-yellow);
@@ -207,19 +224,28 @@ th {
   padding: 10px 12px;
   background: #0b0e11;
   color: var(--binance-text-secondary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   border-bottom: 1px solid var(--binance-border);
 }
 td {
   padding: 10px 12px;
   border-bottom: 1px solid #2b3139;
-  font-size: 14px;
+  font-size: 13px;
   font-family: 'Consolas', monospace;
 }
 tr.top { background: #f0b90b08; }
 tr:hover td { background: #181a20; }
 .sym-cell { font-weight: 600; color: var(--binance-yellow); }
+.name-cell { color: var(--binance-text-secondary); font-family: inherit; font-size: 12px; }
+.cat-badge {
+  background: #1e88e522;
+  color: #64b5f6;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: inherit;
+}
 .pos { color: var(--binance-green); }
 .neg { color: var(--binance-red); }
 
@@ -240,6 +266,6 @@ tr:hover td { background: #181a20; }
 }
 
 @media (max-width: 900px) {
-  .form-grid { grid-template-columns: repeat(2, 1fr); }
+  .form-grid { grid-template-columns: 1fr; }
 }
 </style>
