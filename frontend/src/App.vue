@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, provide } from 'vue'
+import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme } from 'naive-ui'
 import { getConfig, listSymbols, getStrategies } from './api'
 import Dashboard from './views/Dashboard.vue'
 import KLine from './views/KLine.vue'
@@ -11,6 +12,24 @@ import DataPanel from './views/DataPanel.vue'
 import Settings from './views/Settings.vue'
 import Trade from './views/Trade.vue'
 import Learn from './views/Learn.vue'
+import SystemLogPanel from './components/SystemLogPanel.vue'
+
+const themeOverrides = {
+  common: {
+    primaryColor: '#f0b90b',
+    primaryColorHover: '#fcd535',
+    primaryColorPressed: '#d8a200',
+    primaryColorSuppl: '#f0b90b',
+    bodyColor: '#181a20',
+    cardColor: '#1e2329',
+    modalColor: '#1e2329',
+    popoverColor: '#1e2329',
+    borderColor: '#2b3139',
+    dividerColor: '#2b3139',
+    textColorBase: '#eaecef',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
+  },
+}
 
 const cfg = ref(null)
 const symbolCount = ref(0)
@@ -69,32 +88,43 @@ onMounted(reloadCfg)
 </script>
 
 <template>
-  <div class="layout">
-    <header class="header">
-      <div class="logo">
-        <span class="logo-icon">⚡</span>
-        <div class="logo-text">
-          <div class="title">K7Quant</div>
-          <div class="subtitle">币安量化回测系统 v4.0</div>
+  <n-config-provider :theme="darkTheme" :theme-overrides="themeOverrides">
+    <n-message-provider>
+      <n-dialog-provider>
+        <div class="layout">
+          <header class="header">
+            <div class="logo">
+              <span class="logo-icon">⚡</span>
+              <div class="logo-text">
+                <div class="title">K7Quant</div>
+                <div class="subtitle">币安量化回测系统 v4.0</div>
+              </div>
+            </div>
+            <nav class="nav">
+              <button v-for="t in TABS" :key="t.id"
+                :class="{ active: activeTab === t.id }"
+                @click="activeTab = t.id">{{ t.label }}</button>
+            </nav>
+            <div class="status">
+              <span class="badge yellow" :title="`${symbolCount} 个币种被激活`">
+                {{ (cfg?.active_symbols?.length ?? symbolCount) }} 活跃
+              </span>
+              <span class="badge" :title="总币种数">{{ symbolCount }} 总</span>
+              <span class="badge" :title="总策略数">{{ strategyCount }} 策略</span>
+              <SystemLogPanel />
+            </div>
+          </header>
+          <main class="main">
+            <component v-if="ready" :is="active.comp" v-bind="activeProps" />
+            <div v-else class="loading-screen">
+              <div class="spinner"></div>
+              <span>正在加载配置...</span>
+            </div>
+          </main>
         </div>
-      </div>
-      <nav class="nav">
-        <button v-for="t in TABS" :key="t.id"
-          :class="{ active: activeTab === t.id }"
-          @click="activeTab = t.id">{{ t.label }}</button>
-      </nav>
-      <div class="status" v-if="cfg">
-        <span class="badge yellow">{{ (cfg.active_symbols || []).length }} 活跃</span>
-        <span class="badge">{{ symbolCount }} 总</span>
-        <span class="badge">{{ strategyCount }} 策略</span>
-      </div>
-    </header>
-
-    <main class="main">
-      <component v-if="ready" :is="active.comp" v-bind="activeProps" />
-      <div v-else class="loading">加载中...</div>
-    </main>
-  </div>
+      </n-dialog-provider>
+    </n-message-provider>
+  </n-config-provider>
 </template>
 
 <style scoped>
@@ -142,5 +172,19 @@ onMounted(reloadCfg)
   margin: 0 auto;
   width: 100%;
 }
-.loading { text-align: center; padding: 100px 0; color: var(--text-secondary); }
+.loading-screen {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 100px 0;
+  gap: 16px;
+  color: var(--text-secondary);
+}
+.loading-screen .spinner {
+  width: 40px; height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--yellow);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>

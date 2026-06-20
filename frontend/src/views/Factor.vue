@@ -36,6 +36,7 @@ const corrPeriod = ref(60)
 const allFactorsResult = ref(null)
 const allFactorsLoading = ref(false)
 const allFactorsError = ref('')
+const allFactorsFilter = ref('')  // 按名称过滤
 
 watch(corrFactorsStr, (v) => {
   corrFactors.value = v.split(/[,\s]+/).filter(Boolean)
@@ -270,6 +271,36 @@ async function computeAllFactors() {
   }
 }
 
+const filteredAllFactors = computed(() => {
+  if (!allFactorsResult.value) return []
+  if (!allFactorsFilter.value) return allFactorsResult.value
+  const t = allFactorsFilter.value.toLowerCase()
+  return allFactorsResult.value.filter(r =>
+    r.factor.name_zh.toLowerCase().includes(t) ||
+    r.factor.id.toLowerCase().includes(t) ||
+    r.factor.category.toLowerCase().includes(t)
+  )
+})
+
+const groupedAllFactors = computed(() => {
+  const groups = {}
+  for (const r of filteredAllFactors.value) {
+    const cat = r.factor.category || '其他'
+    if (!groups[cat]) groups[cat] = []
+    groups[cat].push(r)
+  }
+  // 按类别顺序排序
+  const order = factorList.value.categories || []
+  const out = []
+  for (const cat of order) {
+    if (groups[cat]) out.push({ category: cat, factors: groups[cat] })
+  }
+  for (const cat of Object.keys(groups)) {
+    if (!order.includes(cat)) out.push({ category: cat, factors: groups[cat] })
+  }
+  return out
+})
+
 function drawRank() {
   const el = document.getElementById('rank-chart')
   if (!el || !rankResult.value) return
@@ -443,21 +474,36 @@ loadRules()
           {{ allFactorsLoading ? '计算中...' : '▶ 计算全部' }}
         </button>
       </div>
-      <div v-if="allFactorsResult?.length" class="all-factors-grid">
-        <div v-for="r in allFactorsResult" :key="r.factor.id" class="factor-card">
-          <div class="fc-head">
-            <span class="fc-name">{{ r.factor.name_zh }}</span>
-            <span class="fc-id">{{ r.factor.id }}</span>
-            <span v-if="r.error" class="fc-err" :title="r.error">✗</span>
+
+      <!-- 进度与结果 -->
+      <div v-if="allFactorsResult?.length" class="all-result-toolbar">
+        <div class="filter-bar">
+          <input v-model="allFactorsFilter" type="text" placeholder="🔍 按名称过滤 (中文/ID/分类)" class="filter-input" />
+          <span class="result-count">共 {{ filteredAllFactors.length }} / {{ allFactorsResult.length }} 个因子</span>
+        </div>
+      </div>
+
+      <!-- 按 category 分组 -->
+      <div v-if="allFactorsResult?.length" class="all-factors-grouped">
+        <div v-for="g in groupedAllFactors" :key="g.category" class="afg-section" v-show="!allFactorsFilter || g.factors.length">
+          <div class="afg-head">{{ g.category }} <span class="afg-count">({{ g.factors.length }})</span></div>
+          <div class="all-factors-grid">
+            <div v-for="r in g.factors" :key="r.factor.id" class="factor-card" :class="{ hasError: r.error }">
+              <div class="fc-head">
+                <span class="fc-name">{{ r.factor.name_zh }}</span>
+                <span class="fc-id">{{ r.factor.id }}</span>
+                <span v-if="r.error" class="fc-err" :title="r.error">✗</span>
+              </div>
+              <div v-if="r.data && !r.error" class="fc-stats">
+                <div class="fc-stat"><span class="lbl">当前</span><span class="val">{{ fmt(r.data.summary?.current) }}</span></div>
+                <div class="fc-stat"><span class="lbl">最小</span><span class="val">{{ fmt(r.data.summary?.min) }}</span></div>
+                <div class="fc-stat"><span class="lbl">最大</span><span class="val">{{ fmt(r.data.summary?.max) }}</span></div>
+                <div class="fc-stat"><span class="lbl">均值</span><span class="val">{{ fmt(r.data.summary?.mean) }}</span></div>
+              </div>
+              <div v-if="r.error" class="fc-error">{{ r.error }}</div>
+              <div v-if="r.data && !r.error" class="fc-desc">{{ r.factor.description }}</div>
+            </div>
           </div>
-          <div v-if="r.data && !r.error" class="fc-stats">
-            <div class="fc-stat"><span class="lbl">当前</span><span class="val">{{ fmt(r.data.summary?.current) }}</span></div>
-            <div class="fc-stat"><span class="lbl">最小</span><span class="val">{{ fmt(r.data.summary?.min) }}</span></div>
-            <div class="fc-stat"><span class="lbl">最大</span><span class="val">{{ fmt(r.data.summary?.max) }}</span></div>
-            <div class="fc-stat"><span class="lbl">均值</span><span class="val">{{ fmt(r.data.summary?.mean) }}</span></div>
-          </div>
-          <div v-if="r.error" class="fc-error">{{ r.error }}</div>
-          <div v-if="r.data && !r.error" class="fc-desc">{{ r.factor.description }}</div>
         </div>
       </div>
       <StateView :loading="allFactorsLoading" :error="allFactorsError" empty-text="选币种，点计算查看所有因子" empty-icon="📊" v-if="!allFactorsResult && !allFactorsLoading && !allFactorsError" />
@@ -564,6 +610,38 @@ loadRules()
   gap: 10px;
   margin-top: 12px;
 }
+.all-result-toolbar { margin-top: 12px; }
+.filter-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.filter-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  flex: 1;
+  outline: none;
+}
+.filter-input:focus { border-color: var(--yellow); }
+.result-count { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.all-factors-grouped { display: flex; flex-direction: column; gap: 16px; }
+.afg-section { }
+.afg-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--yellow);
+  padding: 8px 12px;
+  background: var(--bg);
+  border-left: 3px solid var(--yellow);
+  border-radius: 4px;
+  margin-bottom: 10px;
+}
+.afg-count { color: var(--text-muted); font-weight: 400; margin-left: 4px; }
 .factor-card {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -572,6 +650,7 @@ loadRules()
   transition: border-color 0.2s;
 }
 .factor-card:hover { border-color: var(--yellow); }
+.factor-card.hasError { border-color: var(--red); }
 .fc-head {
   display: flex;
   align-items: center;

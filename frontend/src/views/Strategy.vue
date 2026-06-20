@@ -2,11 +2,12 @@
 import { ref, onMounted, computed, nextTick, inject } from 'vue'
 import {
   getStrategies, getStrategyTemplates, validateStrategyCode,
-  createStrategy, deleteStrategy, updateStrategy,
+  createStrategy, deleteStrategy, updateStrategy, getDslDocs,
 } from '../api'
 
 import StrategyPicker from '../components/StrategyPicker.vue'
 import StateView from '../components/StateView.vue'
+import MonacoEditor from '../components/MonacoEditor.vue'
 
 const cfg = inject('cfg')
 const reloadCfg = inject('reload')
@@ -21,6 +22,7 @@ const error = ref('')
 const msg = ref('')
 const validation = ref(null)
 const dslDocs = ref({ syntax: '', examples: [] })
+const editorMode = ref('code')   // 'expr' = 表达式编辑器 | 'code' = Monaco 代码编辑器
 let validationTimer = null
 
 const selectedStrategy = computed(() => strategies.value.find(s => s.id === selectedId.value))
@@ -131,8 +133,12 @@ async function del() {
 
 onMounted(async () => {
   await load()
-  const res = await fetch('/api/strategy/dsl-docs')
-  dslDocs.value = res.data
+  // 原来用原生 fetch().data (拿不到数据), 改用已封装的 axios getDslDocs()
+  try {
+    dslDocs.value = (await getDslDocs()).data
+  } catch (e) {
+    console.error('dsl-docs', e)
+  }
 })
 </script>
 
@@ -190,10 +196,21 @@ onMounted(async () => {
         </div>
         <div class="form-row">
           <div class="form-group grow">
-            <label>策略代码 (DSL)</label>
-            <textarea v-model="editForm.code" @input="validate" rows="14"></textarea>
+            <div class="editor-head">
+              <label>策略代码 (DSL)</label>
+              <div class="editor-tabs">
+                <button type="button" :class="{ active: editorMode === 'expr' }"
+                  @click="editorMode = 'expr'">表达式</button>
+                <button type="button" :class="{ active: editorMode === 'code' }"
+                  @click="editorMode = 'code'">代码编辑器</button>
+              </div>
+            </div>
+            <textarea v-if="editorMode === 'expr'" v-model="editForm.code"
+              @input="validate" rows="14"></textarea>
+            <MonacoEditor v-else v-model="editForm.code" language="python"
+              height="340px" @update:modelValue="validate" />
             <div class="hint">
-              signal = 表达式 (必需) | 止损/止盈/仓位 (可选)
+              signal = 表达式 (必需) | 止损/止盈/仓位/频率 (可选)
             </div>
           </div>
         </div>
@@ -290,6 +307,17 @@ onMounted(async () => {
 .form-group textarea { width: 100%; resize: vertical; }
 .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--yellow); }
 .form-group .hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.editor-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.editor-tabs { display: flex; gap: 4px; }
+.editor-tabs button {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.editor-tabs button.active { background: var(--yellow); color: #000; font-weight: 600; }
 .validation { margin-bottom: 12px; font-size: 12px; }
 .validation .ok { color: var(--green); }
 .validation .err { color: var(--red); }

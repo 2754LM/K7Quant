@@ -1,18 +1,22 @@
 # K7Quant ⚡ 币安加密货币量化回测系统
 
-完整的加密货币量化回测平台，基于 Binance 公开 API，支持多策略、多周期、可视化回测、可编辑配置。
+完整的加密货币量化回测平台，基于 Binance 公开 API，支持多策略、多周期、可视化回测、可编辑配置、自定义 DSL 策略。
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Vue](https://img.shields.io/badge/Vue-3-green) ![License](https://img.shields.io/badge/license-MIT-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Vue](https://img.shields.io/badge/Vue-3-green) ![Naive UI](https://img.shields.io/badge/UI-Naive-blueviolet) ![License](https://img.shields.io/badge/license-MIT-brightgreen)
 
 ## ✨ 核心特性
 
-- 📊 **4 种内置策略**：双均线交叉、动量轮动、RSI 超买超卖、MACD 金叉死叉
-- ⏱️ **12 种 K 线周期**：1m / 5m / 15m / 1h / 4h / 1d / 1w 等
+- 📊 **8 种内置策略**：双均线/RSI/MACD/动量轮动/突破新高/布林带均值回归/量价齐升/ADX 趋势跟随
+- ⏱️ **13 种 K 线周期**：1m / 5m / 15m / 1h / 4h / 1d / 1w 等，**支持自定义周期** (如 `8h`, `90m`)
+- 🔬 **33+ 因子库**：MA / EMA / RSI / MACD / BOLL / KDJ / ATR / OBV / VWAP 等，每因子都有中文说明
 - 💎 **25 个 USDT 币种**：BTC/ETH/SOL/BNB 等主流 + 完整元信息 (中英文/分类/市值排名/简介)
+- 🛠️ **DSL 自定义策略**：类 Python 表达式，`signal = ...` + 可选止损/止盈/仓位/频率，**实时校验**
+- 📊 **多周期对比**：同一策略同时跑 4h/1d/1w 等多周期，曲线叠加对比
 - 🎯 **一键扫描**：默认跑活跃池所有币种，按夏普排序，前 3 名奖牌标记
-- 📈 **专业图表**：净值曲线 (vs BTC 基准) + K线 + MA7/25/99 叠加
-- 🔍 **多条件筛选**：6 个预设场景 + 自定义阈值
-- ⚙️ **可视化配置中心**：所有参数 (回测/币种/周期/策略) 都在 Web 界面编辑
+- 📈 **专业图表**：净值曲线 (vs BTC 基准) + K线 + MA7/25/99/BOLL/EMA/成交量叠加
+- 🔍 **多条件筛选**：6 个预设场景 + 自定义阈值 + 因子条件构建器
+- 💬 **系统日志面板**：顶部 🔔 显示所有 API 调用/错误，方便排查
+- ⚙️ **可视化配置中心**：所有参数 (回测/币种/周期/策略) 都在 Web 界面编辑，使用 Naive UI 组件
 - 🏷️ **币种库**：按市值排名展示，可点击查看每个币种的详细中文介绍
 - 📚 **新手友好**：白话教学 + 6 步量化工作流
 
@@ -44,126 +48,153 @@ python run.py
 
 ### 方式 3: Docker (TODO)
 
+### ⚙️ 国内访问 (VPN / 代理) 与 Binance 直连
+
+Binance API 在中国大陆需要走代理，两种方式任选其一：
+
+- **走代理**：「设置 → 数据源 + VPN」填入 HTTP/HTTPS 代理（如 Clash 默认 `http://127.0.0.1:7890`），
+  保存后重启生效；也支持环境变量 `HTTP_PROXY` / `HTTPS_PROXY`。
+- **直连**：能直接访问 `api.binance.com`（海外或已全局代理）则保持「启用代理 = 否」即可，无需任何配置。
+
+在「💾 数据」页点「测试连接」可确认当前是直连还是走代理、是否连通。
+
 ## 📁 项目结构
 
 ```
 K7Quant/
-├── README.md                   # 本文档
-├── ARCHITECTURE.md             # 架构详解
-├── AGENTS.md                   # AI Agent 工作指南
-├── LICENSE                     # MIT 协议
+├── README.md / ARCHITECTURE.md / AGENTS.md / LICENSE
+├── config.yaml                 # ⚙️ 主配置 (UI 可编辑, 根目录单文件)
 │
-├── config/                     # ⚙️ 配置中心 (UI 可编辑)
-│   ├── settings.yaml           # 主配置 (回测/服务/时间帧/活跃币种/策略默认)
-│   └── symbols.yaml            # 25 个币种的完整元信息
-│
-├── quant_core/                 # 🧠 核心库 (无 UI 依赖)
-│   ├── settings.py             # YAML 配置加载器 (单例 + 线程锁)
-│   ├── data/                   # 数据层
-│   │   ├── fetcher.py          # Binance API 客户端
-│   │   ├── cache.py            # 本地 CSV 缓存 (按时帧分目录)
-│   │   └── access.py           # 高层 API: get_kline / get_many
-│   ├── strategies/             # 策略层
-│   │   ├── base.py             # Strategy 基类
-│   │   ├── ma_cross.py         # 双均线
-│   │   ├── momentum_rotation.py # 动量轮动 (池子)
-│   │   ├── rsi.py              # RSI 超买超卖
-│   │   └── macd.py             # MACD 金叉死叉
-│   └── backtest/               # 回测引擎
-│       ├── engine.py           # Backtester + plot_equity
-│       └── metrics.py          # 绩效指标 (Sharpe/Calmar/MaxDD/WinRate...)
-│
-├── backend/                    # 🌐 FastAPI 服务层
-│   ├── app.py                  # 入口
-│   ├── routers/                # API 路由 (按域拆分)
-│   │   ├── backtest.py         # /api/backtest/*
-│   │   ├── data.py             # /api/data
-│   │   └── config.py           # /api/config/*
-│   └── services/               # 业务层 (调用 core + 编排)
-│       ├── backtest_service.py # 单标的/池子/K线/筛选
-│       ├── data_service.py     # 缓存查询/清理
-│       ├── config_service.py   # 配置读写
-│       └── helpers.py          # 通用工具
+├── backend/                    # 🌐 FastAPI 后端
+│   ├── app.py                  # 入口: lifespan + 路由注册 + 静态前端
+│   ├── api/                    # API 路由层 (按域拆分)
+│   │   ├── backtest_api.py     # /api/backtest/*
+│   │   ├── factor_api.py       # /api/factor/*
+│   │   ├── strategy_api.py     # /api/strategy/*
+│   │   ├── data_api.py         # /api/data/*
+│   │   ├── symbol_api.py       # /api/symbol/*
+│   │   ├── config_api.py       # /api/config/*
+│   │   ├── trade_api.py        # /api/trade/* (占位)
+│   │   └── rule_api.py         # /api/rule/* (自定义规则)
+│   ├── services/               # 业务层 (编排 core + 规则)
+│   ├── core/                   # config(YAML 加载) + logger + 路径常量
+│   ├── data/                   # fetcher(Binance) + cache(CSV) + access
+│   ├── factor/                 # 因子库 (33+ 预置因子)
+│   ├── strategy/               # DSL 引擎 StrategyEngine + 8 个内置策略
+│   ├── backtest/               # Backtester + compute_metrics + 绘图
+│   └── storage/                # SQLite: db + crud
 │
 ├── frontend/                   # 🎨 Vue3 前端
-│   ├── src/
-│   │   ├── App.vue             # 根布局 + 路由
-│   │   ├── api/index.js        # axios 封装
-│   │   ├── components/         # 通用组件
-│   │   │   ├── MetricCard.vue
-│   │   │   ├── StrategyPicker.vue
-│   │   │   ├── TimeframePicker.vue
-│   │   │   └── SymbolPicker.vue
-│   │   └── views/
-│   │       ├── Dashboard.vue   # 智能回测主页
-│   │       ├── KLine.vue       # K线 (含币种详情卡)
-│   │       ├── Filter.vue      # 币种筛选 (6 个预设)
-│   │       ├── Symbols.vue     # 币种库 (按市值排名 + 详情)
-│   │       ├── DataPanel.vue   # 数据缓存管理
-│   │       ├── Settings.vue    # 配置中心 (5 个 tab)
-│   │       └── Learn.vue       # 量化课堂
-│   └── dist/                   # 构建产物
+│   └── src/
+│       ├── App.vue             # 根布局 (Naive UI Provider + Tab 路由 + 系统日志)
+│       ├── main.js             # 入口 (注册 Naive UI)
+│       ├── api/index.js        # axios 封装 + 系统日志自动记录
+│       ├── components/         # 可复用组件
+│       │   ├── DateRangePicker.vue    # 区间选择 (1周/1月/3月/... + HTML5 date)
+│       │   ├── TimeframePicker.vue    # 视觉化 TF 选择 (分钟/小时/天/周 + 自定义)
+│       │   ├── StrategyPicker.vue
+│       │   ├── MetricCard.vue
+│       │   ├── HelpTip.vue
+│       │   ├── StateView.vue          # loading/error/empty 三态
+│       │   ├── RuleBuilder.vue        # 因子条件构建器 (字段+算子+值)
+│       │   ├── SystemLogPanel.vue     # 顶部 🔔 系统日志面板
+│       │   └── MonacoEditor.vue       # Monaco 代码编辑器
+│       ├── views/              # 10 个页面
+│       │   ├── Dashboard.vue   # 智能回测 + 多周期对比 + 自定义代码面板
+│       │   ├── KLine.vue       # K线 + 多指标 (MA/EMA/BOLL/成交量)
+│       │   ├── Factor.vue      # 因子 (单/多/全部/跨币种排名)
+│       │   ├── Filter.vue      # 币种筛选 (6 预设 + 自定义)
+│       │   ├── Symbols.vue     # 币种库 (25 个币种)
+│       │   ├── Strategy.vue    # 策略编辑器 (DSL + Monaco 双模式)
+│       │   ├── DataPanel.vue   # 数据缓存
+│       │   ├── Trade.vue       # 模拟/实盘 (占位)
+│       │   ├── Settings.vue    # 设置 (5 tab, Naive UI)
+│       │   └── Learn.vue       # 教程
+│       └── utils/
+│           └── systemLog.js    # 全局日志服务 (reactive)
 │
-├── run.py                      # 一键启动
+├── run.py                      # 一键启动 (读 config.yaml 端口)
 ├── install.bat / start.bat     # Windows 脚本
-├── build.py                    # PyInstaller 打包
 ├── requirements.txt
 └── .gitignore
 ```
+
+> 运行时数据 (`data/`、`*.db`、`frontend/dist/`、`logs/`) 都被 `.gitignore` 忽略；
+> 数据库是 SQLite `data/k7quant.db`，首次启动自动建表。
 
 ## 🎯 功能页面
 
 | 页面 | 功能 |
 |------|------|
-| **🎯 智能回测** | 默认跑活跃池，按夏普排序，前 3 名奖牌。所有参数即时生效 |
-| **📊 K线数据** | 顶部显示选中币种的完整中文介绍 + 标签，下方 K线图 + 数据表切换 |
-| **🔍 币种筛选** | 6 个预设场景 (牛市赢家/防御币/高夏普/低价/中价/高价) + 多条件自定义 |
-| **💎 币种库** | 25 个币种按市值排名，可点击查看详细描述/标签/分类 |
-| **💾 数据缓存** | 按时间帧分组管理，可单独删除某个币种或整个时间帧 |
-| **⚙️ 配置中心** | 5 个 tab：回测默认值/活跃币种/K线周期/策略参数/关于 |
-| **📚 量化课堂** | 8 个指标白话讲解 + 8 个核心概念 + 6 步工作流 + 风险提醒 |
+| **🎯 智能回测** | 选策略 + K线 + 币种 + 区间 → 一键扫描。多周期对比模式叠加显示。自定义代码面板支持 DSL 编写 + 实时校验 + 保存为策略 |
+| **📊 K线数据** | 顶部币种中文介绍，下方 K线图 (蜡烛 + MA7/25/99 + 成交量副图) + 数据表切换。带 🔄 刷新按钮 |
+| **🔬 因子** | 4 个 tab: 单因子查询 / 多因子相关性 (chip 选择) / 全部因子 (并行算所有) / 跨币种排名 |
+| **🔍 币种筛选** | 6 个预设场景 + 多条件自定义。Naive UI 下拉 |
+| **💎 币种库** | 25 个币种按市值排名，可点击查看详细描述/标签/分类。多选切换活跃池 |
+| **💾 数据缓存** | 按时间帧分组管理，统计占用 |
+| **⚙️ 设置** | 5 个 tab: 回测默认值 / 数据源+VPN / 界面主题 / 交易 / 关于。使用 Naive UI 组件 |
+| **📚 量化课堂** | 9 指标卡片 + 8 概念 + 6 步工作流 |
 
 ## 📡 API 列表
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/health` | 健康检查 |
-| GET | `/api/config` | 获取完整配置 (settings + symbols + strategies) |
-| PUT | `/api/config/active-symbols` | 设置活跃币种池 |
-| PUT | `/api/config/strategy-defaults` | 设置某个策略的默认参数 |
-| PUT | `/api/config/backtest-defaults` | 设置回测默认值 |
-| PUT | `/api/config/timeframes` | 设置可用 K线周期 |
-| POST | `/api/config/reset` | 重置所有配置 |
+| GET | `/api/health` | 健康检查 (含 Binance 连通性) |
+| GET | `/api/config` | 完整配置 (settings/symbols/strategies/timeframes/active_symbols) |
+| PUT | `/api/config/backtest` | 回测默认值 |
+| PUT | `/api/config/data-source` | 数据源 + 代理 |
+| PUT | `/api/config/ui` | 主题 / 问号提示 |
+| PUT | `/api/config/trading` | 模拟/实盘参数 |
 | POST | `/api/backtest/single` | 单标的回测 |
-| POST | `/api/backtest/scan` | 池子扫描 (返回 ranking + 组合曲线) |
+| POST | `/api/backtest/scan` | 池子扫描 |
+| POST | `/api/backtest/code` | 用临时 DSL 代码回测 |
 | POST | `/api/backtest/filter` | 币种筛选 |
-| GET | `/api/backtest/kline/{symbol}` | K线 + MA7/25/99 + 统计 |
-| GET | `/api/data` | 列出所有缓存 |
-| DELETE | `/api/data?timeframe=&symbol=` | 删除缓存 |
+| GET | `/api/backtest/kline/{symbol}` | K线 + MA + 统计 |
+| GET/POST/DELETE | `/api/factor/*` | 因子查询/计算/相关性/排名 |
+| GET/POST/DELETE | `/api/strategy/*` | 策略 CRUD/校验/模板/DSL 文档 |
+| GET/POST/DELETE | `/api/symbol/*` | 币种元信息/活跃池 |
+| GET/POST/DELETE | `/api/rule/*` | 自定义规则/查询 |
+| GET | `/api/data/cache` | 列出缓存 |
+| DELETE | `/api/data/cache?tf=&symbol=` | 删除缓存 |
+| POST | `/api/data/fetch` | 触发下载 |
 
 ## 📊 内置策略
 
-| ID | 名称 | 类型 | 参数 | 适合 |
-|----|------|------|------|------|
-| `ma_cross` | 双均线交叉 | trend | ma_short, ma_long | 趋势市 |
-| `momentum_rotation` | 动量轮动 | momentum | top_n, hold, lookback | 牛市/震荡 |
-| `rsi` | RSI 超买超卖 | mean_reversion | period, oversold, overbought | 震荡市 |
-| `macd` | MACD 金叉死叉 | trend | fast, slow, signal | 中长线 |
+| ID | 名称 | 类型 | 适合 |
+|----|------|------|------|
+| `双均线交叉` | MA(7) 上穿 MA(25) | trend | 趋势市 |
+| `RSI 超买超卖` | RSI(14) < 30 买入 | mean_reversion | 震荡市 |
+| `MACD 金叉死叉` | EMA(12) > EMA(26) | trend | 中长线 |
+| `动量轮动` | N 根涨幅 > 0 | momentum | 牛市 |
+| `突破新高` | high_break + MA 过滤 | breakout | 突破 |
+| `布林带均值回归` | zscore < -2 | mean_reversion | 反转 |
+| `量价齐升` | volume + MA 配合 | volume | 异动 |
+| `ADX 趋势跟随` | MA 交叉 + ADX > 25 | trend | 强趋势 |
+
+## 🛠️ DSL 策略编写
+
+```python
+# 双均线交叉示例
+signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND NOT CROSS_DOWN(MA(close, 7), MA(close, 25))
+止损 = 0.05      # 5% 止损
+止盈 = 0.15      # 15% 止盈
+仓位 = 1.0       # 满仓
+```
+
+支持的因子函数：`MA / EMA / RSI / MACD / BOLL / KDJ / momentum / volatility / high_break / low_break / obv / vwap / mfi / adx / atr / ...`（共 33+）
+
+支持的逻辑：`AND / OR / NOT / CROSS_UP / CROSS_DOWN`，比较运算符 `> < >= <= == !=`
+
+**安全**: AST 白名单解释执行，禁止 eval/属性访问/下标。
 
 ## 🛠️ 技术栈
 
 - **后端**: FastAPI + Uvicorn + Pydantic + PyYAML
-- **前端**: Vue 3 + Vite + ECharts + Axios
+- **前端**: Vue 3 + Vite + ECharts + Naive UI + Axios
 - **数据**: Binance Spot API (无需 Key)
 - **计算**: pandas + numpy + matplotlib
-- **配置**: YAML + 自研单例加载器
-
-## 📦 打包成 EXE
-
-```bash
-python build.py
-# 产出: dist/K7Quant.exe (单文件，可发给任何人直接运行)
-```
+- **配置**: 根目录 `config.yaml` (UI 可编辑) + SQLite (`data/k7quant.db`)
+- **编辑器**: Monaco (策略代码) + 表达式编辑器双模式
 
 ## ⚠️ 免责声明
 

@@ -259,6 +259,32 @@ const symbolInfo = computed(() => {
   return m
 })
 
+// 排名过滤: 默认全选, 用户可取消
+const visibleRanking = ref(new Set())  // 空 Set = 显示全部
+const symbolFilterText = ref('')
+function toggleRankingSymbol(sym) {
+  if (visibleRanking.value.has(sym)) visibleRanking.value.delete(sym)
+  else visibleRanking.value.add(sym)
+}
+function clearRankingFilter() {
+  visibleRanking.value = new Set()
+  symbolFilterText.value = ''
+}
+const filteredRanking = computed(() => {
+  let arr = ranking.value
+  if (visibleRanking.value.size > 0) {
+    arr = arr.filter(r => visibleRanking.value.has(r.symbol))
+  }
+  if (symbolFilterText.value) {
+    const t = symbolFilterText.value.toLowerCase()
+    arr = arr.filter(r =>
+      r.symbol.toLowerCase().includes(t) ||
+      (symbolInfo.value[r.symbol]?.name_zh || '').includes(t)
+    )
+  }
+  return arr
+})
+
 function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFixed(2) + '%' }
 function fmtNum(v, d = 2) { return v === null || v === undefined ? '-' : Number(v).toFixed(d) }
 function sortBy(key) {
@@ -543,8 +569,24 @@ function drawMultiChart() {
 
       <div v-if="result" class="ranking-section">
         <div class="ranking-header">
-          <h3>单币表现排名 ({{ result.count }})</h3>
-          <div class="sort-tip">点击表头切换排序</div>
+          <h3>单币表现排名 <span class="count-chip">{{ filteredRanking.length }} / {{ result.count }}</span></h3>
+          <div class="ranking-tools">
+            <input v-model="symbolFilterText" type="text" class="symbol-search"
+              placeholder="🔍 搜索币种..." />
+            <button v-if="visibleRanking.size || symbolFilterText" class="btn-clear" @click="clearRankingFilter">
+              ✗ 清空筛选
+            </button>
+            <span class="sort-tip">点击表头切换排序</span>
+          </div>
+        </div>
+        <div class="ranking-chips">
+          <span class="chip-label">显示币种:</span>
+          <button v-for="r in ranking" :key="r.symbol"
+            :class="['r-chip', { active: visibleRanking.size === 0 || visibleRanking.has(r.symbol) }]"
+            @click="toggleRankingSymbol(r.symbol)">
+            {{ r.symbol }}
+            <span v-if="visibleRanking.size === 0 || visibleRanking.has(r.symbol)" class="r-dot"></span>
+          </button>
         </div>
         <table>
           <thead>
@@ -560,7 +602,7 @@ function drawMultiChart() {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(r, i) in ranking" :key="r.symbol" :class="{ top: i < 3 }">
+            <tr v-for="(r, i) in filteredRanking" :key="r.symbol" :class="{ top: i < 3 }">
               <td class="rank">
                 <span v-if="i === 0">🥇</span>
                 <span v-else-if="i === 1">🥈</span>
@@ -786,6 +828,71 @@ function drawMultiChart() {
 }
 .ranking-header h3 { font-size: 16px; }
 .sort-tip { font-size: 12px; color: var(--text-secondary); }
+.ranking-header h3 { font-size: 16px; display: flex; align-items: center; gap: 8px; }
+.count-chip {
+  background: var(--bg-elevated);
+  color: var(--yellow);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'Consolas', monospace;
+}
+.ranking-tools { display: flex; align-items: center; gap: 12px; }
+.symbol-search {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  width: 160px;
+  outline: none;
+}
+.symbol-search:focus { border-color: var(--yellow); }
+.btn-clear {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.btn-clear:hover { border-color: var(--red); color: var(--red); }
+.ranking-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.chip-label { font-size: 11px; color: var(--text-muted); margin-right: 4px; }
+.r-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-family: 'Consolas', monospace;
+  cursor: pointer;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.r-chip:hover { border-color: var(--yellow); color: var(--text); }
+.r-chip.active {
+  background: rgba(240,185,11,0.1);
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+.r-dot {
+  width: 4px; height: 4px;
+  background: currentColor;
+  border-radius: 50%;
+}
 table { width: 100%; border-collapse: collapse; }
 th {
   text-align: left;
