@@ -81,7 +81,8 @@ def backtest_single(symbol: str, strategy_id: int, params: dict,
     bt = Backtester()
     leverage = float(params.get("leverage", 1))
     position_size = rules.get("position_size", 1.0)
-    result = bt.run(sig_df, leverage=leverage, position_size=position_size)
+    result = bt.run(sig_df, leverage=leverage, position_size=position_size,
+                    rebalance_bars=_rebalance_bars(rules))
     bench = _benchmark(start, end, timeframe)
     metrics = compute_metrics(result, bench, timeframe)
 
@@ -132,7 +133,8 @@ def backtest_with_code(symbol: str, code: str, params: dict,
     bt = Backtester()
     leverage = float(params.get("leverage", 1))
     position_size = rules.get("position_size", 1.0)
-    result = bt.run(sig_df, leverage=leverage, position_size=position_size)
+    result = bt.run(sig_df, leverage=leverage, position_size=position_size,
+                    rebalance_bars=_rebalance_bars(rules))
     bench = _benchmark(start, end, timeframe)
     metrics = compute_metrics(result, bench, timeframe)
 
@@ -192,7 +194,8 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
                 position = (signal > 0).astype(int)
             sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
                                    "position": position})
-            r = bt.run(sig_df, leverage=leverage, position_size=position_size)
+            r = bt.run(sig_df, leverage=leverage, position_size=position_size,
+                       rebalance_bars=_rebalance_bars(rules))
             m = compute_metrics(r, timeframe=timeframe)
             ranking.append(_ranking_row(sym, m))
         except Exception as e:
@@ -212,7 +215,8 @@ def scan_pool(strategy_id: int, symbols: list = None, timeframe: str = None,
                 position = (signal > 0).astype(int)
             sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
                                    "position": position})
-            r = bt.run(sig_df, leverage=leverage, position_size=position_size)
+            r = bt.run(sig_df, leverage=leverage, position_size=position_size,
+                       rebalance_bars=_rebalance_bars(rules))
             all_eq.append(r.set_index("date")["equity"].rename(sym))
         except Exception:
             continue
@@ -292,7 +296,8 @@ def filter_symbols(params: dict) -> dict:
                     position = (signal > 0).astype(int)
                 sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
                                        "position": position})
-                r = bt.run(sig_df, position_size=rules.get("position_size", 1.0))
+                r = bt.run(sig_df, position_size=rules.get("position_size", 1.0),
+                           rebalance_bars=_rebalance_bars(rules))
                 m = compute_metrics(r, timeframe=timeframe)
                 sharpe = m.get("sharpe", 0) or 0
             except Exception:
@@ -358,6 +363,11 @@ def _resolve_end():
     if v == "auto":
         return datetime.now().strftime("%Y%m%d")
     return v
+
+
+def _rebalance_bars(rules: dict) -> int:
+    """调仓频率: 优先用策略 DSL 的 `频率=N`, 否则回退到配置中心 backtest.rebalance_bars"""
+    return int(rules.get("rebalance_bars") or sys_config.get("backtest.rebalance_bars", 1) or 1)
 
 
 def _active_symbols():

@@ -1,18 +1,36 @@
 import axios from 'axios'
+import { log as sysLog, info as logInfo, error as logError } from '../utils/systemLog'
 
 const api = axios.create({
   baseURL: '/api',
   timeout: 300000,
 })
 
+api.interceptors.request.use((cfg) => {
+  cfg.metadata = { startTime: Date.now() }
+  return cfg
+})
+
 api.interceptors.response.use(
-  (r) => r,
+  (r) => {
+    const ms = Date.now() - (r.config.metadata?.startTime || 0)
+    logInfo('api', `${r.config.method?.toUpperCase()} ${shortenUrl(r.config.url)} ${r.status} (${ms}ms)`)
+    return r
+  },
   (err) => {
+    const ms = Date.now() - (err.config?.metadata?.startTime || 0)
+    const status = err.response?.status || 'ERR'
     const msg = err?.response?.data?.detail || err.message
-    console.error('[API]', err.config?.url, msg)
+    logError('api', `${err.config?.method?.toUpperCase()} ${shortenUrl(err.config?.url || '')} ${status} (${ms}ms): ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`)
     return Promise.reject(new Error(typeof msg === 'string' ? msg : JSON.stringify(msg)))
   }
 )
+
+function shortenUrl(url) {
+  if (!url) return ''
+  if (url.length > 60) return url.slice(0, 30) + '...' + url.slice(-25)
+  return url
+}
 
 export const getConfig = () => api.get('/config')
 export const getStrategies = () => api.get('/strategy/list')
@@ -37,6 +55,11 @@ export const computeFactor = (data) => api.post('/factor/compute', data)
 export const computeFactors = (data) => api.post('/factor/compute-many', data)
 export const correlateFactors = (data) => api.post('/factor/correlate', data)
 export const rankFactors = (data) => api.post('/factor/rank', data)
+
+// 自定义规则/查询 (落库 custom_rules)
+export const listRules = () => api.get('/rule/list')
+export const createRule = (data) => api.post('/rule/create', data)
+export const deleteRule = (id) => api.delete(`/rule/${id}`)
 
 export const listSymbols = (activeOnly = false) =>
   api.get('/symbol/list', { params: { active_only: activeOnly } })

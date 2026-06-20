@@ -13,7 +13,7 @@ sys.path.insert(0, ROOT)
 # 从配置读取端口
 try:
     import yaml
-    with open(os.path.join(ROOT, "config", "settings.yaml"), encoding="utf-8") as f:
+    with open(os.path.join(ROOT, "config.yaml"), encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
     PORT = int(cfg.get("server", {}).get("port", 8765))
     AUTO_OPEN = bool(cfg.get("server", {}).get("auto_open_browser", True))

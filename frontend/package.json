@@ -9,9 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "vue": "^3.4.0",
     "axios": "^1.7.0",
-    "echarts": "^5.5.0"
+    "echarts": "^5.5.0",
+    "monaco-editor": "^0.52.2",
+    "naive-ui": "^2.44.1",
+    "vue": "^3.4.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",

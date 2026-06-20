@@ -19,6 +19,7 @@ backtest:
   position_mode: all_in
   fixed_amount: 1000
   leverage: 1
+  rebalance_bars: 1
   default_timeframe: 4h
   start_date: '20240101'
   end_date: auto

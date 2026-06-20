@@ -7,11 +7,40 @@ DSL 语法 (单行表达式, 类似 Excel 函数):
 注: signal 必须单行表达式, 不支持 tuple 解包 (如 a, b = MACD(...))
 """
 import re
+import ast
 import numpy as np
 import pandas as pd
 from typing import Optional
 
 from backend.factor import compute_factor, FACTOR_REGISTRY
+
+
+def _const_number(node):
+    """从 AST 节点取数字常量 (支持 -2.0 这种一元负号), 否则返回 None"""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) \
+            and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        inner = _const_number(node.operand)
+        if inner is not None:
+            return -inner if isinstance(node.op, ast.USub) else inner
+    return None
+
+
+def _apply_cmp(op, left, right):
+    if isinstance(op, ast.Lt):
+        return left < right
+    if isinstance(op, ast.Gt):
+        return left > right
+    if isinstance(op, ast.LtE):
+        return left <= right
+    if isinstance(op, ast.GtE):
+        return left >= right
+    if isinstance(op, ast.Eq):
+        return left == right
+    if isinstance(op, ast.NotEq):
+        return left != right
+    raise ValueError("不支持的比较运算符")
 
 
 class StrategyEngine:
@@ -30,7 +59,7 @@ class StrategyEngine:
     def _parse(code: str) -> dict:
         """解析 DSL"""
         rules = {"stop_loss": 0.0, "take_profit": 0.0,
-                 "position_size": 1.0, "rebalance": "every_bar"}
+                 "position_size": 1.0}
 
         for raw in code.split("\n"):
             line = raw.strip()
@@ -53,194 +82,224 @@ class StrategyEngine:
             m = re.match(r"仓位\s*=\s*([\d.]+)", line)
             if m:
                 rules["position_size"] = float(m.group(1)); continue
+            # 频率 / 调仓 / 调仓周期 = N (每 N 根 K 线才允许换仓, 默认 1)
+            m = re.match(r"(?:频率|调仓|调仓周期)\s*=\s*(\d+)", line)
+            if m:
+                rules["rebalance_bars"] = max(1, int(m.group(1))); continue
         return rules
 
     @staticmethod
     def _build_signal_fn(expr: str):
-        """将表达式编译成可调用函数
-        支持语法: 因子函数 + 比较/AND/OR/NOT + CROSS_UP/CROSS_DOWN
-        关键列名 (close/open/high/low/volume/amount) 自动替换为 df[col]
+        """把 DSL 表达式编译成可调用函数。
+
+        安全实现: **不使用 eval**。先把 AND/OR/NOT 关键字转成位运算符, 再用
+        ``ast`` 解析, 经白名单校验 (禁止属性访问/下标/任意名称) 后由解释器求值。
+        支持: 因子函数 + 比较 + AND/OR/NOT + CROSS_UP/CROSS_DOWN + 列名/数字。
         """
         from backend.factor import FACTOR_REGISTRY as FR
         user_to_id = {f["name_zh"].lower(): fid for fid, f in FR.items()}
         user_to_id.update({f["name_zh"]: fid for fid, f in FR.items()})
 
-        for m in re.finditer(r"(\w+)\(", expr):
+        COLS = {"close", "open", "high", "low", "volume", "amount"}
+        CROSS = {"CROSS_UP", "CROSS_DOWN"}
+
+        def resolve_factor_id(name):
+            if name in FR:
+                return name
+            if name.lower() in FR:
+                return name.lower()
+            return user_to_id.get(name)
+
+        # 友好错误: 提前检查函数名 (真正的安全保证在 _validate_ast)
+        for m in re.finditer(r"(\w+)\s*\(", expr):
             name = m.group(1)
-            if name in {"AND", "OR", "NOT", "CROSS_UP", "CROSS_DOWN", "_get"}:
+            if name in {"AND", "OR", "NOT"} or name in CROSS:
                 continue
-            if name not in FR and name.lower() not in FR and name not in user_to_id:
+            if resolve_factor_id(name) is None:
                 raise ValueError(f"未知因子: {name}")
 
-        COLS = ["close", "open", "high", "low", "volume", "amount"]
+        transformed = StrategyEngine._logic_to_operators(expr)
+        try:
+            tree = ast.parse(transformed, mode="eval")
+        except SyntaxError as e:
+            raise ValueError(f"表达式语法错误: {e}")
 
-        def replace_calls(s):
-            """NAME(args) -> _get("NAME", "args")
-            列名保持原样, 在 _get 内部按 COLS 解析
-            """
-            OPERATORS = {"AND", "OR", "NOT", "CROSS_UP", "CROSS_DOWN", "_get"}
-            result = []
-            i = 0
-            while i < len(s):
-                if s[i].isspace():
-                    result.append(s[i]); i += 1; continue
-                m = re.match(r"(\w+)\(", s[i:])
-                if not m:
-                    result.append(s[i]); i += 1; continue
-                name = m.group(1)
-                if name in OPERATORS:
-                    result.append(name); i += len(name); continue
-                depth = 1
-                j = i + len(m.group(0))
-                while j < len(s) and depth > 0:
-                    if s[j] == "(": depth += 1
-                    elif s[j] == ")": depth -= 1
-                    j += 1
-                args = s[i + len(m.group(0)):j - 1]
-                # 用单引号包 args 避免与 close 转的 _df["close"] 嵌套
-                result.append(f"_get('{name}', '{args}')")
-                i = j
-            return "".join(result)
-
-        def replace_cols(s):
-            """close -> _df["close"]"""
-            for col in COLS:
-                s = re.sub(rf"(?<![A-Za-z0-9_]){col}(?![A-Za-z0-9_(])", f'_df["{col}"]', s)
-            return s
-
-        def replace_logic(s):
-            """把 AND/OR/NOT 关键字替换成 Python 操作符 (& | ~)
-            NOT 替换: 正确处理嵌套括号
-            """
-            def find_matching_paren(text, start):
-                """从 start 位置的 ( 开始找匹配的 ), 返回结束位置 (含右括号)"""
-                assert text[start] == "("
-                depth = 1
-                k = start + 1
-                in_str = None
-                while k < len(text):
-                    ch = text[k]
-                    if in_str:
-                        if ch == in_str and text[k-1] != "\\":
-                            in_str = None
-                    elif ch in ("'", '"'):
-                        in_str = ch
-                    elif ch == "(":
-                        depth += 1
-                    elif ch == ")":
-                        depth -= 1
-                        if depth == 0:
-                            return k
-                    k += 1
-                return len(text) - 1
-
-            OPERATORS_NOT = {"CROSS_UP", "CROSS_DOWN", "AND", "OR"}
-
-            def replace_not(text):
-                result = []
-                i = 0
-                while i < len(text):
-                    m = re.match(r"\bNOT\s+", text[i:])
-                    if not m:
-                        result.append(text[i]); i += 1; continue
-                    j = i + m.end()
-                    # 检查是否跟了 OPERATOR (如 NOT CROSS_DOWN(...))
-                    op_matched = None
-                    for op in OPERATORS_NOT:
-                        if (text[j:].startswith(op) and
-                            (j + len(op) == len(text) or
-                             (not text[j+len(op)].isalnum() and text[j+len(op)] != "_"))):
-                            op_matched = op
-                            j += len(op)
-                            while j < len(text) and text[j].isspace():
-                                j += 1
-                            break
-                    if j < len(text) and text[j] == "(":
-                        k = find_matching_paren(text, j)
-                        expr = text[j:k+1]
-                        if op_matched:
-                            # NOT CROSS_DOWN(...) -> (~CROSS_DOWN(...))
-                            result.append("(~" + op_matched + expr + ")")
-                        else:
-                            result.append("(~" + expr + ")")
-                        i = k + 1
-                    else:
-                        k = j
-                        while k < len(text) and text[k] not in " \t\n":
-                            k += 1
-                        result.append("(~" + text[j:k] + ")")
-                        i = k
-                return "".join(result)
-
-            s = replace_not(s)
-            prev = None
-            while prev != s:
-                prev = s
-                s = re.sub(r"\s+AND\s+", " & ", s)
-            prev = None
-            while prev != s:
-                prev = s
-                s = re.sub(r"\s+OR\s+", " | ", s)
-            return s
+        StrategyEngine._validate_ast(tree, COLS, CROSS, resolve_factor_id)
 
         def signal_fn(df: pd.DataFrame) -> pd.Series:
             cache = {}
 
-            def get_factor_result(name: str, args_str: str):
-                key = f"{name}({args_str})"
+            def factor_series(name, arg_nodes):
+                factor_id = resolve_factor_id(name)
+                schema_keys = list(FR[factor_id].get("params_schema", {}).keys())
+                kwargs = {}
+                pi = 0  # 只有数字参数推进 schema 位置: 列(close/...)是数据, 不占参数位
+                for node in arg_nodes:
+                    num = _const_number(node)
+                    if num is None:
+                        continue
+                    if pi < len(schema_keys):
+                        kwargs[schema_keys[pi]] = num
+                        pi += 1
+                key = (factor_id, tuple(sorted(kwargs.items())))
                 if key in cache:
                     return cache[key]
-                factor_id = name if name in FR else (
-                    name.lower() if name.lower() in FR else user_to_id.get(name)
-                )
-                if factor_id is None:
-                    raise ValueError(f"未知因子: {name}")
-                # 解析参数: 列名 (close, _df["close"]) 直接跳过, 数字作为参数
-                args = [a.strip() for a in args_str.split(",") if a.strip()]
-                schema = FR[factor_id].get("params_schema", {})
-                kwargs = {}
-                positional_idx = 0
-                for arg in args:
-                    # 列名判定: close, _df["close"]
-                    is_col = (arg in COLS or
-                              arg in {f'_df["{c}"]' for c in COLS})
-                    if is_col:
-                        positional_idx += 1; continue
-                    try:
-                        val = float(arg)
-                    except ValueError:
-                        val = arg
-                    keys = list(schema.keys())
-                    while positional_idx < len(keys) and keys[positional_idx] in kwargs:
-                        positional_idx += 1
-                    if positional_idx < len(keys):
-                        kwargs[keys[positional_idx]] = val
-                        positional_idx += 1
-                result = compute_factor(df, factor_id, kwargs)
-                cache[key] = result
-                return result
+                res = compute_factor(df, factor_id, kwargs)
+                cache[key] = res
+                return res
 
-            processed = replace_cols(expr)
-            processed = replace_calls(processed)
-            processed = replace_logic(processed)
+            def ev(node):
+                if isinstance(node, ast.Expression):
+                    return ev(node.body)
+                if isinstance(node, ast.BinOp):
+                    left, right = ev(node.left), ev(node.right)
+                    op = node.op
+                    if isinstance(op, ast.BitAnd):
+                        return left & right
+                    if isinstance(op, ast.BitOr):
+                        return left | right
+                    if isinstance(op, ast.Add):
+                        return left + right
+                    if isinstance(op, ast.Sub):
+                        return left - right
+                    if isinstance(op, ast.Mult):
+                        return left * right
+                    if isinstance(op, ast.Div):
+                        return left / right
+                    if isinstance(op, ast.Mod):
+                        return left % right
+                    raise ValueError("不支持的运算符")
+                if isinstance(node, ast.UnaryOp):
+                    val = ev(node.operand)
+                    if isinstance(node.op, ast.Invert):
+                        return ~val
+                    if isinstance(node.op, ast.USub):
+                        return -val
+                    if isinstance(node.op, ast.UAdd):
+                        return +val
+                    raise ValueError("不支持的一元运算符")
+                if isinstance(node, ast.Compare):
+                    left = ev(node.left)
+                    result = None
+                    for op, comp in zip(node.ops, node.comparators):
+                        right = ev(comp)
+                        piece = _apply_cmp(op, left, right)
+                        result = piece if result is None else (result & piece)
+                        left = right
+                    return result
+                if isinstance(node, ast.Call):
+                    fname = node.func.id
+                    if fname in CROSS:
+                        a, b = ev(node.args[0]), ev(node.args[1])
+                        if fname == "CROSS_UP":
+                            return (a > b) & (a.shift(1) <= b.shift(1))
+                        return (a < b) & (a.shift(1) >= b.shift(1))
+                    return factor_series(fname, node.args)
+                if isinstance(node, ast.Name):
+                    if node.id in COLS:
+                        return df[node.id]
+                    raise ValueError(f"未知标识符: {node.id}")
+                if isinstance(node, ast.Constant):
+                    return node.value
+                raise ValueError(f"不支持的表达式: {type(node).__name__}")
 
-            def _get(name, args):
-                return get_factor_result(name, args)
-
-            local_env = {
-                "__builtins__": {},
-                "_df": df,
-                "_get": _get,
-                "CROSS_UP": lambda a, b: ((a > b) & (a.shift(1) <= b.shift(1))),
-                "CROSS_DOWN": lambda a, b: ((a < b) & (a.shift(1) >= b.shift(1))),
-            }
             try:
-                result = eval(processed, local_env)
+                result = ev(tree)
+            except ValueError:
+                raise
             except Exception as e:
-                raise ValueError(f"表达式求值失败: {e}\n表达式: {expr}\n处理后: {processed}")
+                raise ValueError(f"表达式求值失败: {e}\n表达式: {expr}")
             return result.astype(int) if hasattr(result, "astype") else result
 
         return signal_fn
+
+    # ---- DSL 安全解析辅助 ----
+
+    @staticmethod
+    def _logic_to_operators(s: str) -> str:
+        """把 AND/OR/NOT 关键字转成 Python 位运算符 (& | ~), 供 ast 解析。"""
+        def find_matching_paren(text, start):
+            depth = 1
+            k = start + 1
+            while k < len(text):
+                if text[k] == "(":
+                    depth += 1
+                elif text[k] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return k
+                k += 1
+            return len(text) - 1
+
+        def replace_not(text):
+            result = []
+            i = 0
+            while i < len(text):
+                m = re.match(r"\bNOT\b\s*", text[i:])
+                if not m:
+                    result.append(text[i]); i += 1; continue
+                j = i + m.end()
+                op_matched = ""
+                for op in ("CROSS_UP", "CROSS_DOWN"):
+                    if (text[j:].startswith(op) and
+                            (j + len(op) == len(text) or
+                             not (text[j + len(op)].isalnum() or text[j + len(op)] == "_"))):
+                        op_matched = op
+                        j += len(op)
+                        while j < len(text) and text[j].isspace():
+                            j += 1
+                        break
+                if j < len(text) and text[j] == "(":
+                    k = find_matching_paren(text, j)
+                    result.append("(~" + op_matched + text[j:k + 1] + ")")
+                    i = k + 1
+                else:
+                    k = j
+                    while k < len(text) and not (text[k].isspace() or text[k] in "()&|"):
+                        k += 1
+                    result.append("(~" + text[j:k] + ")")
+                    i = k
+            return "".join(result)
+
+        s = replace_not(s)
+        prev = None
+        while prev != s:
+            prev = s
+            s = re.sub(r"\s+AND\s+", " & ", s)
+        prev = None
+        while prev != s:
+            prev = s
+            s = re.sub(r"\s+OR\s+", " | ", s)
+        return s
+
+    @staticmethod
+    def _validate_ast(tree, COLS, CROSS, resolve):
+        """白名单校验 AST: 只允许数值/比较/逻辑运算 + 因子调用 + 列名。
+
+        关键: 不在白名单内的节点 (尤其 Attribute / Subscript) 一律拒绝, 从根本上
+        杜绝 ``_df.__class__.__init__.__globals__[...]`` 之类的沙箱逃逸。
+        """
+        allowed = (
+            ast.Expression, ast.BinOp, ast.UnaryOp, ast.Compare, ast.Call,
+            ast.Name, ast.Constant, ast.Load,
+            ast.BitAnd, ast.BitOr, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod,
+            ast.Invert, ast.USub, ast.UAdd,
+            ast.Lt, ast.Gt, ast.LtE, ast.GtE, ast.Eq, ast.NotEq,
+        )
+        for node in ast.walk(tree):
+            if not isinstance(node, allowed):
+                raise ValueError(f"非法或不支持的语法: {type(node).__name__}")
+            if isinstance(node, ast.Call):
+                if not isinstance(node.func, ast.Name) or node.keywords:
+                    raise ValueError("只允许直接调用因子函数 (不支持关键字参数)")
+                if node.func.id not in CROSS and resolve(node.func.id) is None:
+                    raise ValueError(f"未知因子: {node.func.id}")
+            if isinstance(node, ast.Name):
+                if node.id not in COLS and node.id not in CROSS and resolve(node.id) is None:
+                    raise ValueError(f"未知标识符: {node.id}")
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                    raise ValueError("仅支持数字常量")
 
 
 # ============ 预置策略 (DSL 单行表达式形式) ============

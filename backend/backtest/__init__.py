@@ -17,23 +17,42 @@ class Backtester:
     def __init__(self, initial_capital: float = None,
                  commission_rate: float = None,
                  slippage: float = None):
-        self.initial_capital = initial_capital or float(sys_config.get("backtest.initial_capital", 10000))
-        self.commission_rate = commission_rate or float(sys_config.get("backtest.commission_rate", 0.0004))
-        self.slippage = slippage or float(sys_config.get("backtest.slippage", 0.0005))
+        # 用 is None 判断, 否则显式传入的 0 (零本金/零手续费/零滑点) 会被默认值覆盖
+        self.initial_capital = (initial_capital if initial_capital is not None
+                                else float(sys_config.get("backtest.initial_capital", 10000)))
+        self.commission_rate = (commission_rate if commission_rate is not None
+                                else float(sys_config.get("backtest.commission_rate", 0.0004)))
+        self.slippage = (slippage if slippage is not None
+                         else float(sys_config.get("backtest.slippage", 0.0005)))
         self.position_mode = sys_config.get("backtest.position_mode", "all_in")
         self.fixed_amount = float(sys_config.get("backtest.fixed_amount", 1000))
 
     def run(self, signal_df: pd.DataFrame, leverage: float = 1,
-            position_size: float = 1.0) -> pd.DataFrame:
+            position_size: float = 1.0, rebalance_bars: int = 1) -> pd.DataFrame:
         """
         signal_df: 包含 date/close/position (0/1) 的 df
         position_size: 仓位比例 (0-1)
+        rebalance_bars: 调仓频率, 每 N 根 K 线才允许换一次仓 (默认 1=每根)
         """
         df = signal_df.copy().reset_index(drop=True)
+        # 调仓频率: 只在每 N 根的整数倍上采用新信号, 其余沿用上一次仓位
+        if rebalance_bars and rebalance_bars > 1 and len(df):
+            raw = df["position"].tolist()
+            held = raw[0]
+            locked = []
+            for i, v in enumerate(raw):
+                if i % rebalance_bars == 0:
+                    held = v
+                locked.append(held)
+            df["position"] = locked
         df["ret"] = df["close"].pct_change().fillna(0)
+        # 次根 K 线才按信号建仓, 避免未来函数
         df["position"] = df["position"].shift(1).fillna(0)
         df["target_size"] = position_size
-        df["trade"] = (df["position"] != df["position"].shift(1)).astype(int).fillna(0)
+        # 仓位变化才算一次交易; 首行没有前值, 不应被记为交易/收费
+        df["trade"] = (df["position"] != df["position"].shift(1)).fillna(False).astype(int)
+        if len(df):
+            df.loc[df.index[0], "trade"] = 0
         # 实际仓位 = 信号 * 比例 * 杠杆
         df["actual_pos"] = df["position"] * df["target_size"] * leverage
         # 收益
@@ -102,8 +121,12 @@ def compute_metrics(equity_df: pd.DataFrame, benchmark_df: pd.DataFrame = None,
                     timeframe: str = "1d") -> dict:
     if equity_df.empty:
         return {}
-    if "ret" not in equity_df.columns:
-        equity_df = equity_df.copy()
+    equity_df = equity_df.copy()
+    # 用策略净值推导收益; 不复用 run() 里残留的标的价格 ret 列,
+    # 否则 Sharpe/波动率/胜率算的是标的而非策略 (见 issue #5)
+    if "strategy_ret" in equity_df.columns:
+        equity_df["ret"] = equity_df["strategy_ret"].fillna(0)
+    else:
         equity_df["ret"] = equity_df["equity"].pct_change().fillna(0)
 
     equity = equity_df["equity"].values

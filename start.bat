@@ -18,6 +18,6 @@ if not exist frontend\dist\index.html (
     cd ..
 )
 
-start "" http://127.0.0.1:8765
+rem 浏览器由 run.py 按 config.yaml 里的端口自动打开 (不再硬编码 8765)
 venv\Scripts\python.exe run.py
 pause

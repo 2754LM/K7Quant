@@ -61,14 +61,23 @@ class DataCache:
                         f.unlink()
 
     def stats(self) -> dict:
-        out = {"by_timeframe": {}, "total_size_kb": 0, "total_files": 0}
+        # files[] 给前端 DataPanel 用 (name="{tf}/{symbol}.csv", size_kb, mtime 秒)
+        out = {"files": [], "by_timeframe": {}, "total_size_kb": 0, "total_files": 0}
         if not self.root.exists():
             return out
         for tf_dir in sorted(self.root.iterdir()):
             if not tf_dir.is_dir():
                 continue
-            files = list(tf_dir.glob("*.csv"))
-            sz = sum(f.stat().st_size for f in files)
+            files = sorted(tf_dir.glob("*.csv"))
+            sz = 0
+            for f in files:
+                st = f.stat()
+                sz += st.st_size
+                out["files"].append({
+                    "name": f"{tf_dir.name}/{f.name}",
+                    "size_kb": round(st.st_size / 1024, 1),
+                    "mtime": st.st_mtime,
+                })
             out["by_timeframe"][tf_dir.name] = {
                 "count": len(files), "size_kb": round(sz / 1024, 1)
             }

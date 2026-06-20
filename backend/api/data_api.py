@@ -24,7 +24,8 @@ def exchange_symbols():
 
 @router.get("/test-connection")
 def test_connection():
-    return data_service.test_connectivity()
+    # 包一层 binance, 与前端 DataPanel 读取的 res.data.binance 对齐
+    return {"binance": data_service.test_connectivity()}
 
 
 @router.post("/fetch")

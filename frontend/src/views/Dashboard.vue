@@ -594,11 +594,11 @@ function drawMultiChart() {
               <th>#</th>
               <th>币种</th>
               <th>名称</th>
-              <th class="sortable" @click="sortBy('total_return')">总收益 {{ sortKey==='total_return' ? (sortDir==='desc'?'↓':'↑') : '' }}</th>
-              <th class="sortable" @click="sortBy('sharpe')">夏普 {{ sortKey==='sharpe' ? (sortDir==='desc'?'↓':'↑') : '' }}</th>
-              <th class="sortable" @click="sortBy('calmar')">Calmar</th>
-              <th class="sortable" @click="sortBy('max_drawdown')">回撤</th>
-              <th class="sortable" @click="sortBy('win_rate')">胜率</th>
+              <th class="sortable" @click="sortBy('total_return')">总收益 <span class="arr">{{ sortKey==='total_return' ? (sortDir==='desc'?'↓':'↑') : '↕' }}</span></th>
+              <th class="sortable" @click="sortBy('sharpe')">夏普 <span class="arr">{{ sortKey==='sharpe' ? (sortDir==='desc'?'↓':'↑') : '↕' }}</span></th>
+              <th class="sortable" @click="sortBy('calmar')">Calmar <span class="arr">{{ sortKey==='calmar' ? (sortDir==='desc'?'↓':'↑') : '↕' }}</span></th>
+              <th class="sortable" @click="sortBy('max_drawdown')">回撤 <span class="arr">{{ sortKey==='max_drawdown' ? (sortDir==='desc'?'↓':'↑') : '↕' }}</span></th>
+              <th class="sortable" @click="sortBy('win_rate')">胜率 <span class="arr">{{ sortKey==='win_rate' ? (sortDir==='desc'?'↓':'↑') : '↕' }}</span></th>
             </tr>
           </thead>
           <tbody>
@@ -907,6 +907,14 @@ th {
 }
 th.sortable { cursor: pointer; }
 th.sortable:hover { color: var(--yellow); }
+th.sortable .arr {
+  display: inline-block;
+  margin-left: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+th.sortable .arr { color: var(--yellow); }
 td {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
