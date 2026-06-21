@@ -316,8 +316,8 @@ signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND NOT CROSS_DOWN(MA(close, 7), 
 仓位 = 1.0
 """,
         "params_schema": {
-            "ma_short": {"label": "短均线", "type": "int", "default": 7, "min": 2, "max": 60},
-            "ma_long": {"label": "长均线", "type": "int", "default": 25, "min": 5, "max": 250},
+            "ma_short": {"label": "短均线", "type": "int", "default": 7, "min": 2, "max": 60, "unit": "周期", "hint": "短期均线计算的 K 线根数, 值越小越敏感"},
+            "ma_long": {"label": "长均线", "type": "int", "default": 25, "min": 5, "max": 250, "unit": "周期", "hint": "长期均线计算的 K 线根数, 需大于短均线"},
         },
     },
     {
@@ -331,9 +331,9 @@ signal = (RSI(close, 14) < 30) AND NOT (RSI(close, 14) > 70)
 仓位 = 1.0
 """,
         "params_schema": {
-            "rsi_period": {"label": "RSI 周期", "type": "int", "default": 14, "min": 2, "max": 50},
-            "oversold": {"label": "超卖线", "type": "int", "default": 30, "min": 5, "max": 50},
-            "overbought": {"label": "超买线", "type": "int", "default": 70, "min": 50, "max": 95},
+            "rsi_period": {"label": "RSI 周期", "type": "int", "default": 14, "min": 2, "max": 50, "unit": "周期", "hint": "RSI 指标的回看 K 线数"},
+            "oversold": {"label": "超卖线", "type": "int", "default": 30, "min": 5, "max": 50, "unit": "阈值", "hint": "RSI 跌到此值以下认为超卖 (买入信号)"},
+            "overbought": {"label": "超买线", "type": "int", "default": 70, "min": 50, "max": 95, "unit": "阈值", "hint": "RSI 涨到此值以上认为超买 (卖出信号)"},
         },
     },
     {
@@ -348,9 +348,9 @@ signal = EMA(close, 12) > EMA(close, 26)
 仓位 = 1.0
 """,
         "params_schema": {
-            "macd_fast": {"label": "快 EMA", "type": "int", "default": 12, "min": 2, "max": 60},
-            "macd_slow": {"label": "慢 EMA", "type": "int", "default": 26, "min": 5, "max": 120},
-            "macd_signal": {"label": "信号线", "type": "int", "default": 9, "min": 2, "max": 50},
+            "macd_fast": {"label": "快 EMA", "type": "int", "default": 12, "min": 2, "max": 60, "unit": "周期", "hint": "MACD 中快速 EMA 的回看 K 线数"},
+            "macd_slow": {"label": "慢 EMA", "type": "int", "default": 26, "min": 5, "max": 120, "unit": "周期", "hint": "MACD 中慢速 EMA 的回看 K 线数, 需大于快 EMA"},
+            "macd_signal": {"label": "信号线", "type": "int", "default": 9, "min": 2, "max": 50, "unit": "周期", "hint": "MACD 信号线 (DIF 的 EMA) 的回看 K 线数"},
         },
     },
     {
@@ -364,7 +364,7 @@ signal = momentum(close, 20) > 0
 仓位 = 1.0
 """,
         "params_schema": {
-            "lookback": {"label": "回看周期", "type": "int", "default": 20, "min": 1, "max": 200},
+            "lookback": {"label": "回看周期", "type": "int", "default": 20, "min": 1, "max": 200, "unit": "周期", "hint": "计算动量时回看的 K 线根数"},
         },
     },
     {
@@ -378,7 +378,7 @@ signal = high_break(close, 20) AND NOT (close < MA(close, 20))
 仓位 = 1.0
 """,
         "params_schema": {
-            "break_period": {"label": "突破周期", "type": "int", "default": 20, "min": 5, "max": 100},
+            "break_period": {"label": "突破周期", "type": "int", "default": 20, "min": 5, "max": 100, "unit": "周期", "hint": "突破 N 根 K 线的新高即触发买入"},
         },
     },
     {
@@ -392,8 +392,8 @@ signal = zscore(close, 20) < -2.0
 仓位 = 1.0
 """,
         "params_schema": {
-            "period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100},
-            "std": {"label": "标准差倍数", "type": "float", "default": 2.0, "min": 0.5, "max": 4.0},
+            "period": {"label": "周期", "type": "int", "default": 20, "min": 5, "max": 100, "unit": "周期", "hint": "布林带/均值计算的回看 K 线数"},
+            "std": {"label": "标准差倍数", "type": "float", "default": 2.0, "min": 0.5, "max": 4.0, "unit": "σ", "hint": "上下轨与中轨的距离 (N 倍标准差)"},
         },
     },
     {
@@ -408,7 +408,7 @@ signal = (volume > volume_ma(volume, 20) * 1.5) AND NOT (close < MA(close, 10))
 仓位 = 1.0
 """,
         "params_schema": {
-            "vol_mult": {"label": "放量倍数", "type": "float", "default": 1.5, "min": 1.0, "max": 5.0},
+            "vol_mult": {"label": "放量倍数", "type": "float", "default": 1.5, "min": 1.0, "max": 5.0, "unit": "倍", "hint": "成交量超过均量 N 倍即视为放量"},
         },
     },
     {
@@ -422,7 +422,7 @@ signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND (adx(close, 14) > 25)
 仓位 = 1.0
 """,
         "params_schema": {
-            "adx_threshold": {"label": "ADX 阈值", "type": "int", "default": 25, "min": 15, "max": 50},
+            "adx_threshold": {"label": "ADX 阈值", "type": "int", "default": 25, "min": 15, "max": 50, "unit": "阈值", "hint": "ADX 大于此值认为有趋势, 才发出信号"},
         },
     },
 ]

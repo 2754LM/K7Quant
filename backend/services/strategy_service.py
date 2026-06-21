@@ -12,10 +12,26 @@ from backend.factor import list_factors as _list_factors
 
 
 def init_builtin_strategies():
-    """启动时把预置策略写入 DB (如果还没有)"""
-    existing = {s["name"] for s in crud.list_strategies()}
+    """启动时把预置策略写入 DB (如果还没有); 已存在则同步 params_schema / description / code"""
+    existing = {s["name"]: s for s in crud.list_strategies()}
     for s in get_builtin_strategies():
         if s["name"] in existing:
+            # 已存在: 同步 params_schema (允许新增 unit/hint 等字段, 不影响用户自定义修改的 name/code)
+            old = existing[s["name"]]
+            sid = old["id"]
+            # 只在 schema 有差异时更新, 避免无谓写库
+            if old.get("params_schema") != s["params_schema"] or old.get("description") != s["description"]:
+                try:
+                    crud.update_strategy(
+                        strategy_id=sid,
+                        name=old["name"],  # 保留原名
+                        description=s["description"],
+                        category=old.get("category") or s["category"],
+                        code=old["code"],  # 保留原 code (可能用户改过)
+                        params_schema=s["params_schema"],
+                    )
+                except Exception as e:
+                    print(f"[init_builtin_strategies] update {s['name']} 失败: {e}")
             continue
         crud.create_strategy(
             name=s["name"], description=s["description"],

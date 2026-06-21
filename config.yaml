@@ -17,12 +17,26 @@ backtest:
   commission_rate: 0.0004
   slippage: 0.0005
   position_mode: all_in
-  fixed_amount: 1000
+  fixed_amount: 1000.0
   leverage: 1
   rebalance_bars: 1
   default_timeframe: 4h
   start_date: '20240101'
   end_date: auto
+timeframes:
+- 1m
+- 3m
+- 5m
+- 15m
+- 30m
+- 1h
+- 2h
+- 4h
+- 6h
+- 12h
+- 1d
+- 3d
+- 1w
 ui:
   theme: dark
   show_help_tooltips: true

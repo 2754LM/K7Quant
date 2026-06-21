@@ -1,7 +1,7 @@
 <script setup>
-import { ref, computed, watch, nextTick, inject } from 'vue'
+import { ref, computed, watch, nextTick, inject, onUnmounted } from 'vue'
 import { computeFactor, computeFactors, correlateFactors, rankFactors, listFactors,
-  listRules, createRule, deleteRule } from '../api'
+  listRules, createRule, deleteRule, validateStrategyCode, createStrategy, getStrategies } from '../api'
 import * as echarts from 'echarts'
 
 const cfg = inject('cfg')
@@ -32,11 +32,14 @@ const corrFactors = ref([])
 const corrFactorsStr = ref('rsi,macd_hist,obv')
 const corrPeriod = ref(60)
 
-// 全部因子视图: 选中币种后并行算所有因子
+// 全部因子视图
 const allFactorsResult = ref(null)
 const allFactorsLoading = ref(false)
 const allFactorsError = ref('')
-const allFactorsFilter = ref('')  // 按名称过滤
+const allFactorsFilter = ref('')  // 名称过滤
+const allFactorsSortKey = ref('current')  // 排序列
+const allFactorsSortDir = ref('desc')  // asc | desc
+const allFactorsSelected = ref(new Set())  // 选中的因子 (workflow: 加入公式)
 
 watch(corrFactorsStr, (v) => {
   corrFactors.value = v.split(/[,\s]+/).filter(Boolean)
@@ -83,10 +86,10 @@ async function delRule(id) {
 
 const allSymbols = computed(() => {
   const arr = []
-  for (const s of (factorList.value.factors || [])) {
-    if (!arr.includes(s.symbol)) arr.push(s.symbol)
+  for (const s of (cfg.value?.symbols || [])) {
+    arr.push(s.symbol)
   }
-  return arr.slice(0, 25)
+  return arr.slice(0, 30)
 })
 
 const timeframes = computed(() => cfg.value?.timeframes || ['1d'])
@@ -243,7 +246,7 @@ async function computeRank() {
   }
 }
 
-// 全部因子 (单币种并行计算所有因子)
+// 全部因子: 单币种并行计算
 async function computeAllFactors() {
   if (!factorList.value.factors.length) return
   allFactorsLoading.value = true
@@ -282,24 +285,147 @@ const filteredAllFactors = computed(() => {
   )
 })
 
-const groupedAllFactors = computed(() => {
-  const groups = {}
-  for (const r of filteredAllFactors.value) {
-    const cat = r.factor.category || '其他'
-    if (!groups[cat]) groups[cat] = []
-    groups[cat].push(r)
-  }
-  // 按类别顺序排序
-  const order = factorList.value.categories || []
-  const out = []
-  for (const cat of order) {
-    if (groups[cat]) out.push({ category: cat, factors: groups[cat] })
-  }
-  for (const cat of Object.keys(groups)) {
-    if (!order.includes(cat)) out.push({ category: cat, factors: groups[cat] })
-  }
-  return out
+// 排序后
+const sortedAllFactors = computed(() => {
+  const arr = [...filteredAllFactors.value]
+  const key = allFactorsSortKey.value
+  const dir = allFactorsSortDir.value === 'asc' ? 1 : -1
+  arr.sort((a, b) => {
+    let va, vb
+    if (key === 'name') {
+      va = a.factor.name_zh
+      vb = b.factor.name_zh
+      return va.localeCompare(vb, 'zh-CN') * (dir > 0 ? 1 : -1)
+    }
+    va = a.data?.summary?.[key]
+    vb = b.data?.summary?.[key]
+    if (va == null) return 1
+    if (vb == null) return -1
+    return (va - vb) * dir
+  })
+  return arr
 })
+
+function sortBy(key) {
+  if (allFactorsSortKey.value === key) {
+    allFactorsSortDir.value = allFactorsSortDir.value === 'desc' ? 'asc' : 'desc'
+  } else {
+    allFactorsSortKey.value = key
+    allFactorsSortDir.value = key === 'name' ? 'asc' : 'desc'
+  }
+}
+
+// 选中行 (workflow: 加入公式)
+function toggleFactorSelect(factorId) {
+  if (allFactorsSelected.value.has(factorId)) {
+    allFactorsSelected.value.delete(factorId)
+  } else {
+    allFactorsSelected.value.add(factorId)
+  }
+  allFactorsSelected.value = new Set(allFactorsSelected.value)
+  buildFormulaFromSelection()
+}
+
+// 公式生成器: 根据选中的因子自动生成 signal 表达式
+const generatedFormula = ref('')
+function buildFormulaFromSelection() {
+  const selected = allFactorsResult.value?.filter(r => allFactorsSelected.value.has(r.factor.id)) || []
+  if (!selected.length) {
+    generatedFormula.value = ''
+    return
+  }
+  // 根据因子值是否 > 0 触发买入 (>0: 多头信号, <0: 空头)
+  const parts = selected.map(r => {
+    const fid = r.factor.id
+    // 返回 0/1 signal: 取当前值 > 0 视为 1
+    return `(${fid} > 0)`
+  })
+  // 默认: 全部因子都大于 0 才买入 (AND)
+  generatedFormula.value = `signal = ${parts.join(' AND ')}\n止损 = 0.05\n止盈 = 0.15\n仓位 = 1.0`
+}
+
+function selectAll() {
+  for (const r of filteredAllFactors.value) {
+    allFactorsSelected.value.add(r.factor.id)
+  }
+  allFactorsSelected.value = new Set(allFactorsSelected.value)
+  buildFormulaFromSelection()
+}
+function clearSelection() {
+  allFactorsSelected.value = new Set()
+  generatedFormula.value = ''
+}
+
+// 复制公式
+async function copyFormula() {
+  if (!generatedFormula.value) return
+  try {
+    await navigator.clipboard.writeText(generatedFormula.value)
+    copyTip.value = '已复制 ✓'
+    setTimeout(() => copyTip.value = '', 1500)
+  } catch (e) {
+    copyTip.value = '复制失败'
+  }
+}
+const copyTip = ref('')
+
+// 落库: 把生成的策略保存
+const saveDialogOpen = ref(false)
+const saveName = ref('')
+const saveDesc = ref('')
+const saveLoading = ref(false)
+const saveError = ref('')
+const saveSuccess = ref('')
+const strategies = ref([])
+async function loadStrategies() {
+  try { strategies.value = (await getStrategies()).data.strategies } catch (e) {}
+}
+function openSaveDialog() {
+  if (!generatedFormula.value) return
+  // 默认名: 组合选中的因子名
+  const ids = Array.from(allFactorsSelected.value)
+  saveName.value = `组合: ${ids.join('+')}`
+  saveDesc.value = `${symbol.value} ${timeframe.value} 因子组合策略`
+  saveError.value = ''
+  saveSuccess.value = ''
+  saveDialogOpen.value = true
+}
+async function confirmSave() {
+  if (!saveName.value.trim()) {
+    saveError.value = '请输入策略名'
+    return
+  }
+  if (!generatedFormula.value.trim()) {
+    saveError.value = '公式为空'
+    return
+  }
+  saveLoading.value = true
+  try {
+    // 先校验
+    const valRes = await validateStrategyCode(generatedFormula.value)
+    if (!valRes.data.ok) {
+      saveError.value = `代码无效: ${valRes.data.error}`
+      return
+    }
+    await createStrategy({
+      name: saveName.value.trim(),
+      description: saveDesc.value.trim() || '由因子组合生成',
+      category: 'custom',
+      code: generatedFormula.value,
+      params_schema: {},
+    })
+    saveSuccess.value = '✓ 已保存'
+    setTimeout(() => {
+      saveDialogOpen.value = false
+      saveSuccess.value = ''
+    }, 1500)
+    await loadStrategies()
+  } catch (e) {
+    saveError.value = e.message
+  } finally {
+    saveLoading.value = false
+  }
+}
 
 function drawRank() {
   const el = document.getElementById('rank-chart')
@@ -323,20 +449,25 @@ function drawRank() {
   window.addEventListener('resize', () => chart.resize())
 }
 
-const tab = ref('compute')
+const tab = ref('all')  // 默认 all
 const summary = computed(() => singleResult.value?.summary || {})
 
 function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed(4) }
 function pctRank(v) { return v === null || v === undefined ? '-' : (v * 100).toFixed(1) + '%' }
+function sortIcon(key) {
+  if (allFactorsSortKey.value !== key) return '↕'
+  return allFactorsSortDir.value === 'asc' ? '↑' : '↓'
+}
 
 loadFactorList()
 loadRules()
+loadStrategies()
 </script>
 
 <template>
   <div class="factor-page">
     <div class="tabs">
-      <button :class="{ active: tab === 'all' }" @click="tab = 'all'">📊 全部因子</button>
+      <button :class="{ active: tab === 'all' }" @click="tab = 'all'">📊 全部因子 (表格式)</button>
       <button :class="{ active: tab === 'compute' }" @click="tab = 'compute'">单因子</button>
       <button :class="{ active: tab === 'cross' }" @click="tab = 'cross'">多因子相关性</button>
       <button :class="{ active: tab === 'rank' }" @click="tab = 'rank'">跨币种排名</button>
@@ -368,9 +499,10 @@ loadRules()
           <DateRangePicker v-model:start="start" v-model:end="end" default-range="3m" />
         </div>
         <div v-for="(schema, key) in (selectedFactor?.params_schema || {})" :key="key" class="form-group">
-          <label>{{ schema.label || key }}</label>
+          <label>{{ schema.label || key }}<span v-if="schema.unit" class="unit-hint">({{ schema.unit }})</span></label>
           <input type="number" v-model.number="params[key]"
             :min="schema.min" :max="schema.max" :step="schema.step || 1" />
+          <span v-if="schema.hint" class="param-hint">{{ schema.hint }}</span>
         </div>
         <button class="btn-primary" @click="compute" :disabled="loading">
           {{ loading ? '计算中...' : '计算' }}
@@ -455,12 +587,22 @@ loadRules()
       <div v-if="rankResult" id="rank-chart" class="chart-large"></div>
     </div>
 
-    <!-- 全部因子 (单币种) -->
+    <!-- 全部因子: 表格式 + workflow -->
     <div v-if="tab === 'all'" class="card">
-      <div class="form-row">
+      <div class="all-factors-header">
+        <h3>📊 因子查询工作流</h3>
+        <p class="workflow-hint">
+          ① 顶部选择币种 + K线 + 区间 ② 点「计算全部」出表格 ③ 勾选因子自动生成公式 ④ 复制/保存为策略
+        </p>
+      </div>
+
+      <!-- 顶部: 查询条件 -->
+      <div class="form-row all-factors-form">
         <div class="form-group">
           <label>币种</label>
-          <input type="text" v-model="symbol" />
+          <select v-model="symbol">
+            <option v-for="s in allSymbols" :key="s" :value="s">{{ s }}</option>
+          </select>
         </div>
         <div class="form-group">
           <label>K线</label>
@@ -475,38 +617,121 @@ loadRules()
         </button>
       </div>
 
-      <!-- 进度与结果 -->
-      <div v-if="allFactorsResult?.length" class="all-result-toolbar">
-        <div class="filter-bar">
-          <input v-model="allFactorsFilter" type="text" placeholder="🔍 按名称过滤 (中文/ID/分类)" class="filter-input" />
-          <span class="result-count">共 {{ filteredAllFactors.length }} / {{ allFactorsResult.length }} 个因子</span>
+      <!-- 中部: 表格 + 操作 -->
+      <div v-if="allFactorsResult?.length" class="all-result-section">
+        <div class="all-result-toolbar">
+          <div class="filter-bar">
+            <input v-model="allFactorsFilter" type="text" placeholder="🔍 按名称/ID/分类过滤" class="filter-input" />
+            <span class="result-count">共 {{ filteredAllFactors.length }} / {{ allFactorsResult.length }} 个因子</span>
+            <span class="selected-count">已选 {{ allFactorsSelected.size }} 个</span>
+            <button class="mini-btn" @click="selectAll" :disabled="!filteredAllFactors.length">勾选当前</button>
+            <button class="mini-btn" @click="clearSelection" :disabled="!allFactorsSelected.size">清空</button>
+          </div>
         </div>
-      </div>
 
-      <!-- 按 category 分组 -->
-      <div v-if="allFactorsResult?.length" class="all-factors-grouped">
-        <div v-for="g in groupedAllFactors" :key="g.category" class="afg-section" v-show="!allFactorsFilter || g.factors.length">
-          <div class="afg-head">{{ g.category }} <span class="afg-count">({{ g.factors.length }})</span></div>
-          <div class="all-factors-grid">
-            <div v-for="r in g.factors" :key="r.factor.id" class="factor-card" :class="{ hasError: r.error }">
-              <div class="fc-head">
-                <span class="fc-name">{{ r.factor.name_zh }}</span>
-                <span class="fc-id">{{ r.factor.id }}</span>
-                <span v-if="r.error" class="fc-err" :title="r.error">✗</span>
-              </div>
-              <div v-if="r.data && !r.error" class="fc-stats">
-                <div class="fc-stat"><span class="lbl">当前</span><span class="val">{{ fmt(r.data.summary?.current) }}</span></div>
-                <div class="fc-stat"><span class="lbl">最小</span><span class="val">{{ fmt(r.data.summary?.min) }}</span></div>
-                <div class="fc-stat"><span class="lbl">最大</span><span class="val">{{ fmt(r.data.summary?.max) }}</span></div>
-                <div class="fc-stat"><span class="lbl">均值</span><span class="val">{{ fmt(r.data.summary?.mean) }}</span></div>
-              </div>
-              <div v-if="r.error" class="fc-error">{{ r.error }}</div>
-              <div v-if="r.data && !r.error" class="fc-desc">{{ r.factor.description }}</div>
+        <!-- 表格: 因子 + 统计 + 选择 -->
+        <div class="factor-table-wrap">
+          <table class="factor-table">
+            <thead>
+              <tr>
+                <th class="th-check">选</th>
+                <th class="th-cat">分类</th>
+                <th class="sortable th-name" @click="sortBy('name')">因子 <span class="arr">{{ sortIcon('name') }}</span></th>
+                <th class="th-id">ID</th>
+                <th class="th-desc">说明</th>
+                <th class="sortable th-num" @click="sortBy('current')">当前 <span class="arr">{{ sortIcon('current') }}</span></th>
+                <th class="sortable th-num" @click="sortBy('min')">最小 <span class="arr">{{ sortIcon('min') }}</span></th>
+                <th class="sortable th-num" @click="sortBy('max')">最大 <span class="arr">{{ sortIcon('max') }}</span></th>
+                <th class="sortable th-num" @click="sortBy('mean')">均值 <span class="arr">{{ sortIcon('mean') }}</span></th>
+                <th class="sortable th-num" @click="sortBy('std')">标准差 <span class="arr">{{ sortIcon('std') }}</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in sortedAllFactors" :key="r.factor.id"
+                :class="{ selected: allFactorsSelected.has(r.factor.id), error: r.error }"
+                @click="toggleFactorSelect(r.factor.id)">
+                <td class="td-check">
+                  <input type="checkbox" :checked="allFactorsSelected.has(r.factor.id)"
+                    @click.stop="toggleFactorSelect(r.factor.id)" />
+                </td>
+                <td class="td-cat">
+                  <span class="cat-tag" :data-cat="r.factor.category">{{ r.factor.category }}</span>
+                </td>
+                <td class="td-name">
+                  <span class="name-zh">{{ r.factor.name_zh }}</span>
+                  <span class="name-en">{{ r.factor.name_en }}</span>
+                </td>
+                <td class="td-id"><code>{{ r.factor.id }}</code></td>
+                <td class="td-desc" :title="r.factor.description">{{ r.factor.description }}</td>
+                <td v-if="!r.error" class="td-num" :class="{ current: true }">
+                  <span class="num-val" :class="{ neg: (r.data?.summary?.current ?? 0) < 0 }">{{ fmt(r.data?.summary?.current) }}</span>
+                </td>
+                <td v-else class="td-err" colspan="5">✗ {{ r.error }}</td>
+                <td v-if="!r.error" class="td-num">{{ fmt(r.data?.summary?.min) }}</td>
+                <td v-if="!r.error" class="td-num">{{ fmt(r.data?.summary?.max) }}</td>
+                <td v-if="!r.error" class="td-num">{{ fmt(r.data?.summary?.mean) }}</td>
+                <td v-if="!r.error" class="td-num">{{ fmt(r.data?.summary?.std) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 底部: 公式生成器 -->
+        <div class="formula-builder" v-if="allFactorsSelected.size > 0">
+          <div class="formula-head">
+            <h4>📝 自动生成的公式 (signal: 所有选中因子都 > 0 时买入)</h4>
+            <div class="formula-tools">
+              <span v-if="copyTip" class="copy-tip">{{ copyTip }}</span>
+              <button class="mini-btn" @click="copyFormula" :disabled="!generatedFormula">📋 复制</button>
+              <button class="btn-primary" @click="openSaveDialog" :disabled="!generatedFormula">💾 保存为策略</button>
             </div>
+          </div>
+          <pre class="formula-code">{{ generatedFormula }}</pre>
+          <div class="formula-hint">
+            提示: 复制后到「自写策略」页面粘贴即可运行; 或直接点「保存为策略」入库
           </div>
         </div>
       </div>
+
       <StateView :loading="allFactorsLoading" :error="allFactorsError" empty-text="选币种，点计算查看所有因子" empty-icon="📊" v-if="!allFactorsResult && !allFactorsLoading && !allFactorsError" />
+
+      <!-- 保存对话框 -->
+      <div v-if="saveDialogOpen" class="modal-mask" @click.self="saveDialogOpen = false">
+        <div class="modal">
+          <div class="modal-head">
+            <h3>💾 保存因子组合策略</h3>
+            <button class="modal-close" @click="saveDialogOpen = false">×</button>
+          </div>
+          <div class="modal-body">
+            <div v-if="saveSuccess" class="success-msg">{{ saveSuccess }}</div>
+            <div class="form-row">
+              <div class="form-group grow">
+                <label>策略名 *</label>
+                <input type="text" v-model="saveName" placeholder="输入策略名" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group grow">
+                <label>说明</label>
+                <input type="text" v-model="saveDesc" placeholder="一句话描述" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group grow">
+                <label>代码预览</label>
+                <pre class="code-preview">{{ generatedFormula }}</pre>
+              </div>
+            </div>
+            <div v-if="saveError" class="error-msg">{{ saveError }}</div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn-secondary" @click="saveDialogOpen = false">取消</button>
+            <button class="btn-primary" :disabled="saveLoading || !saveName.trim()" @click="confirmSave">
+              {{ saveLoading ? '保存中...' : '保存' }}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -545,7 +770,7 @@ loadRules()
 }
 .form-group { display: flex; flex-direction: column; gap: 4px; min-width: 120px; }
 .form-group.grow { flex: 1; min-width: 200px; }
-.form-group label { font-size: 11px; color: var(--text-secondary); }
+.form-group label { font-size: 11px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
 .form-group input, .form-group select {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -555,6 +780,8 @@ loadRules()
   font-size: 13px;
 }
 .form-group input:focus, .form-group select:focus { border-color: var(--yellow); }
+.unit-hint { color: var(--text-muted); font-weight: 400; font-size: 10px; }
+.param-hint { font-size: 10px; color: var(--text-muted); line-height: 1.3; margin-top: 2px; }
 .info-row {
   background: var(--bg);
   padding: 10px 14px;
@@ -603,19 +830,28 @@ loadRules()
 .rule-chip .rule-name:hover { color: var(--yellow); }
 .rule-chip button { background: transparent; color: var(--red); padding: 0 2px; font-size: 13px; }
 
-/* 全部因子网格 */
-.all-factors-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 10px;
-  margin-top: 12px;
+/* 全部因子 (workflow + table) */
+.all-factors-header {
+  background: var(--bg);
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  border-left: 3px solid var(--yellow);
 }
-.all-result-toolbar { margin-top: 12px; }
+.all-factors-header h3 { font-size: 15px; margin-bottom: 4px; color: var(--yellow); }
+.workflow-hint { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.all-factors-form {
+  background: var(--bg);
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.all-result-toolbar { margin-top: 12px; margin-bottom: 12px; }
 .filter-bar {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 10px;
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
-  margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 .filter-input {
   background: var(--bg);
@@ -625,52 +861,214 @@ loadRules()
   border-radius: 6px;
   font-size: 12px;
   flex: 1;
+  min-width: 180px;
   outline: none;
 }
 .filter-input:focus { border-color: var(--yellow); }
-.result-count { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
-.all-factors-grouped { display: flex; flex-direction: column; gap: 16px; }
-.afg-section { }
-.afg-head {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--yellow);
-  padding: 8px 12px;
-  background: var(--bg);
-  border-left: 3px solid var(--yellow);
+.result-count, .selected-count { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.selected-count { color: var(--yellow); font-weight: 600; }
+.mini-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 10px;
   border-radius: 4px;
-  margin-bottom: 10px;
+  font-size: 11px;
+  cursor: pointer;
 }
-.afg-count { color: var(--text-muted); font-weight: 400; margin-left: 4px; }
-.factor-card {
-  background: var(--bg);
+.mini-btn:hover:not(:disabled) { border-color: var(--yellow); color: var(--yellow); }
+.mini-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 因子表格 */
+.factor-table-wrap {
+  max-height: 600px;
+  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px 12px;
-  transition: border-color 0.2s;
+  margin-bottom: 16px;
 }
-.factor-card:hover { border-color: var(--yellow); }
-.factor-card.hasError { border-color: var(--red); }
-.fc-head {
+.factor-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.factor-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--bg-elevated);
+  z-index: 1;
+}
+.factor-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.factor-table th.sortable { cursor: pointer; }
+.factor-table th.sortable:hover { color: var(--yellow); }
+.factor-table th .arr { color: var(--yellow); margin-left: 2px; font-size: 10px; }
+.factor-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: 'Consolas', monospace;
+}
+.factor-table tr {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.factor-table tbody tr:hover { background: var(--bg-elevated); }
+.factor-table tr.selected { background: rgba(240,185,11,0.08); }
+.factor-table tr.selected td { border-bottom-color: rgba(240,185,11,0.2); }
+.factor-table tr.error { background: rgba(246,70,93,0.04); }
+.factor-table tr.error:hover { background: rgba(246,70,93,0.08); }
+.td-check { width: 32px; text-align: center; }
+.factor-table input[type="checkbox"] { accent-color: var(--yellow); cursor: pointer; }
+.td-cat { width: 80px; }
+.cat-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.cat-tag[data-cat="均线类"] { background: rgba(52,152,219,0.15); color: #5dade2; }
+.cat-tag[data-cat="趋势类"] { background: rgba(46,204,113,0.15); color: #58d68d; }
+.cat-tag[data-cat="震荡类"] { background: rgba(155,89,182,0.15); color: #bb8fce; }
+.cat-tag[data-cat="动量类"] { background: rgba(241,196,15,0.15); color: #f4d03f; }
+.cat-tag[data-cat="波动类"] { background: rgba(230,126,34,0.15); color: #f5b041; }
+.cat-tag[data-cat="成交量类"] { background: rgba(26,188,156,0.15); color: #5dcead; }
+.cat-tag[data-cat="形态类"] { background: rgba(243,104,224,0.15); color: #f195d8; }
+.cat-tag[data-cat="风险类"] { background: rgba(231,76,60,0.15); color: #f1948a; }
+.cat-tag[data-cat="统计类"] { background: rgba(149,165,166,0.15); color: #aab7b8; }
+.td-name { min-width: 140px; }
+.name-zh { display: block; font-weight: 600; color: var(--text); }
+.name-en { display: block; font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+.td-id { width: 80px; }
+.td-id code {
+  background: var(--bg-elevated);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--yellow);
+}
+.td-desc {
+  max-width: 220px;
+  font-family: inherit;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.td-num { text-align: right; min-width: 80px; }
+.num-val { font-weight: 600; color: var(--yellow); }
+.num-val.neg { color: var(--red); }
+.td-err {
+  font-size: 11px;
+  color: var(--red);
+  font-family: inherit;
+  text-align: left;
+}
+
+/* 公式生成器 */
+.formula-builder {
+  background: var(--bg);
+  border: 2px solid var(--yellow);
+  border-radius: 8px;
+  padding: 14px;
+}
+.formula-head {
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 6px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
-.fc-name { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; }
-.fc-id { font-size: 10px; color: var(--text-muted); font-family: 'Consolas', monospace; }
-.fc-err { color: var(--red); font-size: 14px; }
-.fc-stats {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 4px;
+.formula-head h4 { font-size: 13px; color: var(--yellow); }
+.formula-tools { display: flex; gap: 6px; align-items: center; }
+.copy-tip { font-size: 11px; color: var(--green); }
+.formula-code {
+  background: #0d0e10;
+  border: 1px solid var(--border);
+  padding: 12px 14px;
+  border-radius: 6px;
+  font-family: 'Consolas', monospace;
+  font-size: 13px;
+  color: #eaecef;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
   margin-bottom: 6px;
 }
-.fc-stat { display: flex; flex-direction: column; gap: 1px; }
-.fc-stat .lbl { font-size: 10px; color: var(--text-muted); }
-.fc-stat .val { font-size: 13px; font-family: 'Consolas', monospace; color: var(--yellow); font-weight: 600; }
-.fc-desc { font-size: 11px; color: var(--text-secondary); line-height: 1.4; }
-.fc-error { font-size: 11px; color: var(--red); }
+.formula-hint { font-size: 11px; color: var(--text-muted); }
+
+/* 模态框 */
+.modal-mask {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 560px;
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow: auto;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+}
+.modal-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+}
+.modal-head h3 { font-size: 16px; }
+.modal-close {
+  background: transparent; border: 0; color: var(--text-muted);
+  font-size: 24px; cursor: pointer; line-height: 1;
+}
+.modal-close:hover { color: var(--red); }
+.modal-body { padding: 20px; }
+.modal-body .form-row { margin-bottom: 12px; }
+.modal-body .form-group label { font-size: 12px; color: var(--text-secondary); }
+.modal-body .form-group input {
+  background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px;
+}
+.modal-body .form-group input:focus { border-color: var(--yellow); }
+.code-preview {
+  background: #0d0e10; border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px; font-family: 'Consolas', monospace; font-size: 12px;
+  color: #eaecef; white-space: pre-wrap; max-height: 200px; overflow: auto;
+}
+.error-msg { color: var(--red); font-size: 12px; margin-top: 8px; }
+.success-msg { color: var(--green); font-size: 13px; margin-bottom: 8px; }
+.modal-foot {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 14px 20px; border-top: 1px solid var(--border);
+}
+.btn-primary {
+  background: var(--yellow); color: #000; padding: 8px 16px;
+  border-radius: 6px; font-weight: 600; font-size: 13px;
+  border: 0; cursor: pointer;
+}
+.btn-primary:hover:not(:disabled) { background: #fcd535; }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-secondary {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-secondary); padding: 8px 16px;
+  border-radius: 6px; font-size: 13px; cursor: pointer;
+}
+.btn-secondary:hover { border-color: var(--text-secondary); }
 
 /* 因子选择器 (多因子相关性) */
 .factor-picker {

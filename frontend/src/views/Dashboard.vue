@@ -31,6 +31,29 @@ const params = ref({
   start_date: '20240101', end_date: '20250601',
 })
 
+// 初始化: 从配置里读默认值 (设置页保存的 backtest.start_date/end_date/timeframe)
+const settingsApplied = ref(false)
+function todayStr() {
+  const d = new Date()
+  return d.getFullYear().toString() +
+    String(d.getMonth() + 1).padStart(2, '0') +
+    String(d.getDate()).padStart(2, '0')
+}
+function applyDefaultFromSettings() {
+  if (settingsApplied.value) return  // 只在初始化时套用一次, 避免覆盖用户的修改
+  if (!cfg.value?.settings?.backtest) return
+  const bt = cfg.value.settings.backtest
+  if (bt.start_date) params.value.start_date = bt.start_date
+  if (bt.end_date === 'auto' || !bt.end_date) {
+    params.value.end_date = todayStr()
+  } else {
+    params.value.end_date = bt.end_date
+  }
+  if (bt.default_timeframe) params.value.timeframe = bt.default_timeframe
+  settingsApplied.value = true
+}
+watch(() => cfg.value?.settings?.backtest, applyDefaultFromSettings, { immediate: true, deep: true })
+
 // ---------- 币池选择 ----------
 const poolMode = ref('all')  // 'all' | 'custom'
 const poolSelection = ref(new Set())  // 用户选择的币种
@@ -50,6 +73,49 @@ const filteredPoolList = computed(() => {
   let list = allSymbolsList.value
   if (t) list = list.filter(s => s.toLowerCase().includes(t) || (symInfo[s]?.name_zh || '').toLowerCase().includes(t))
   return list.map(s => ({ symbol: s, name: symInfo[s]?.name_zh || '' }))
+})
+
+// 币池表格: 包含回测关键指标 + 高亮
+const bestKey = ref('total_return')  // 用于高亮的指标
+const HIGHLIGHT_DIRECTION = {  // true = 越大越亮, false = 越小越亮
+  total_return: true, sharpe: true, max_drawdown: false, win_rate: true,
+}
+function setBestKey(k) { bestKey.value = k }
+const symbolPoolRows = computed(() => {
+  const t = poolSearch.value.trim().toLowerCase()
+  const symInfo = {}
+  for (const s of (cfg.value?.symbols || [])) symInfo[s.symbol] = s
+  // 用回测结果 ranking 给每个币种附加指标
+  const rankMap = {}
+  for (const r of (result.value?.ranking || [])) rankMap[r.symbol] = r
+  const asc = HIGHLIGHT_DIRECTION[bestKey.value] === false
+  const allRows = allSymbolsList.value.map(s => {
+    const r = rankMap[s]
+    return {
+      symbol: s,
+      name: symInfo[s]?.name_zh || '',
+      metrics: r || null,
+      _value: r ? (r[bestKey.value] ?? null) : null,
+    }
+  })
+  // 计算前 1/3 阈值
+  const vals = allRows.map(x => x._value).filter(v => v !== null && !isNaN(v))
+  if (vals.length >= 3) {
+    vals.sort((a, b) => asc ? a - b : b - a)
+    const cut = vals[Math.floor(vals.length / 3)]
+    for (const row of allRows) {
+      if (row._value == null) { row.highlight = false; continue }
+      row.highlight = asc ? row._value <= cut : row._value >= cut
+    }
+  } else {
+    for (const row of allRows) row.highlight = false
+  }
+  // 过滤
+  let list = allRows
+  if (t) list = list.filter(s => s.symbol.toLowerCase().includes(t) || (s.name || '').toLowerCase().includes(t))
+  // 优先高亮的在最前
+  list.sort((a, b) => (b.highlight ? 1 : 0) - (a.highlight ? 1 : 0))
+  return list
 })
 const effectivePoolCount = computed(() => {
   if (poolMode.value === 'all') return allActiveSymbols.value.length
@@ -154,6 +220,62 @@ const sortKey = ref('sharpe')
 const sortDir = ref('desc')
 let chart = null
 
+// 图表坐标轴: Y/X 范围 + 自适应
+const yAxisMode = ref('auto')    // 'auto' | 'custom' | 'symmetric' (0居中)
+const yAxisMin = ref(null)       // null = 自动
+const yAxisMax = ref(null)
+const xAxisStart = ref('')       // '' = 自动
+const xAxisEnd = ref('')
+const chartFollowData = ref(true)  // 是否跟随 dataZoom
+function applyAxisRange(opt) {
+  // 写入 yAxis
+  if (yAxisMode.value === 'auto') {
+    opt.yAxis.scale = true
+    opt.yAxis.min = null
+    opt.yAxis.max = null
+  } else if (yAxisMode.value === 'symmetric') {
+    // 0 居中, 等距
+    const data = collectAllYValues()
+    const maxAbs = Math.max(...data.map(Math.abs), 0.01)
+    opt.yAxis.min = -maxAbs * 1.05
+    opt.yAxis.max = maxAbs * 1.05
+  } else {  // custom
+    opt.yAxis.min = yAxisMin.value === null || isNaN(Number(yAxisMin.value)) ? null : Number(yAxisMin.value)
+    opt.yAxis.max = yAxisMax.value === null || isNaN(Number(yAxisMax.value)) ? null : Number(yAxisMax.value)
+  }
+  // 写入 xAxis
+  if (xAxisStart.value || xAxisEnd.value) {
+    opt.xAxis.min = xAxisStart.value || null
+    opt.xAxis.max = xAxisEnd.value || null
+  } else {
+    opt.xAxis.min = null
+    opt.xAxis.max = null
+  }
+  return opt
+}
+function collectAllYValues() {
+  // 收集所有序列的 y 值, 用于 symmetric 模式
+  const arr = []
+  if (result.value?.combined_equity) {
+    const e0 = result.value.combined_equity[0].equity
+    for (const r of result.value.combined_equity) arr.push(r.equity / e0 - 1)
+  }
+  if (result.value?.benchmark) {
+    const b0 = result.value.benchmark[0].nav
+    for (const r of result.value.benchmark) arr.push(r.nav / b0 - 1)
+  }
+  return arr.length ? arr : [0]
+}
+function resetAxisRange() {
+  yAxisMode.value = 'auto'
+  yAxisMin.value = null
+  yAxisMax.value = null
+  xAxisStart.value = ''
+  xAxisEnd.value = ''
+  if (tfMode.value === 'multi') drawMultiChart()
+  else drawChart()
+}
+
 const strategies = computed(() => cfg.value?.strategies || [])
 const timeframes = computed(() => cfg.value?.timeframes || ['1d'])
 const activeStrategy = computed(() =>
@@ -184,7 +306,13 @@ watch([
   () => params.value.timeframe,
   () => params.value.symbols,
 ], () => {
-  if (tfMode.value === 'single') run()
+  if (tfMode.value === 'single' && settingsApplied.value) run()
+})
+
+// 坐标轴范围变化: 重绘图表 (不重新跑回测)
+watch([yAxisMode, yAxisMin, yAxisMax, xAxisStart, xAxisEnd], () => {
+  if (tfMode.value === 'multi') drawMultiChart()
+  else if (result.value) drawChart()
 })
 
 // ---------- 自定义代码面板 ----------
@@ -493,7 +621,7 @@ function drawChart() {
     series.push({ name: 'BTC', type: 'line', data: bm, smooth: true, showSymbol: false,
       lineStyle: { width: 1.5, color: '#f7931a' } })
   }
-  c.setOption({
+  const opt = {
     backgroundColor: 'transparent',
     title: { text: `币池组合 (${result.value.count} 个币种 · ${result.value.timeframe}${result.value.weight_mode && result.value.weight_mode !== '等权' ? ' · ' + result.value.weight_mode : ''})`,
       left: 'center', textStyle: { color: '#eaecef', fontSize: 14 } },
@@ -502,12 +630,14 @@ function drawChart() {
     legend: { data: ['组合策略', 'BTC'], top: 30, textStyle: { color: '#b7bdc6' } },
     grid: { left: 60, right: 30, top: 80, bottom: 60 },
     xAxis: { type: 'time', axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' } },
-    yAxis: { type: 'value', axisLine: { lineStyle: { color: '#474d57' } },
+    yAxis: { type: 'value', scale: true, axisLine: { lineStyle: { color: '#474d57' } },
       axisLabel: { color: '#b7bdc6', formatter: v => (v * 100).toFixed(0) + '%' },
       splitLine: { lineStyle: { color: '#2b3139' } } },
     series,
     dataZoom: [{ type: 'inside' }, { type: 'slider', height: 20, bottom: 10, backgroundColor: '#181a20' }]
-  })
+  }
+  applyAxisRange(opt)
+  c.setOption(opt, true)  // true = notMerge, 清空旧 option
 }
 
 function onResize() { chart?.resize(); codeChart?.resize() }
@@ -529,7 +659,7 @@ function drawMultiChart() {
       lineStyle: { width: 2, color: MULTI_COLORS[i % MULTI_COLORS.length] }
     }
   }).filter(Boolean)
-  c.setOption({
+  const opt = {
     backgroundColor: 'transparent',
     title: { text: `多周期对比: ${activeStrategy.value?.name || ''}`, left: 'center',
       textStyle: { color: '#eaecef', fontSize: 14 } },
@@ -538,12 +668,14 @@ function drawMultiChart() {
     legend: { data: series.map(s => s.name), top: 30, textStyle: { color: '#b7bdc6' } },
     grid: { left: 60, right: 30, top: 80, bottom: 60 },
     xAxis: { type: 'time', axisLine: { lineStyle: { color: '#474d57' } }, axisLabel: { color: '#b7bdc6' } },
-    yAxis: { type: 'value', axisLine: { lineStyle: { color: '#474d57' } },
+    yAxis: { type: 'value', scale: true, axisLine: { lineStyle: { color: '#474d57' } },
       axisLabel: { color: '#b7bdc6', formatter: v => (v * 100).toFixed(0) + '%' },
       splitLine: { lineStyle: { color: '#2b3139' } } },
     series,
     dataZoom: [{ type: 'inside' }, { type: 'slider', height: 20, bottom: 10, backgroundColor: '#181a20' }]
-  })
+  }
+  applyAxisRange(opt)
+  c.setOption(opt, true)
 }
 </script>
 
@@ -577,11 +709,15 @@ function drawMultiChart() {
 
       <div class="config-row">
         <div v-for="(schema, key) in (activeStrategy?.params_schema || {})" :key="key" class="cfg">
-          <label>{{ schema.label || key }}</label>
+          <label>
+            {{ schema.label || key }}
+            <span v-if="schema.unit" class="unit-hint">({{ schema.unit }})</span>
+          </label>
           <input type="number" v-model.number="params[key]"
             :min="schema.min"
             :max="schema.max"
-            @change="run" />
+            @change="run"
+            :title="schema.hint || ''" />
         </div>
         <div class="cfg date-cfg">
           <label>区间</label>
@@ -607,15 +743,34 @@ function drawMultiChart() {
                   <button class="pool-mini" @click="clearPoolSelection">清空</button>
                   <span class="pool-hint">已选 {{ poolSelection.size }} 个</span>
                 </div>
-                <div class="pool-grid">
-                  <label v-for="s in filteredPoolList" :key="s.symbol"
-                    :class="['pool-chip', { active: poolSelection.has(s.symbol) }]">
-                    <input type="checkbox" :checked="poolSelection.has(s.symbol)"
-                      @change="togglePoolSymbol(s.symbol)" />
-                    <span class="pool-sym">{{ s.symbol }}</span>
-                    <span class="pool-name">{{ s.name }}</span>
+                <!-- 全部币种: 带关键参数 (回测结果) + 符合条件高亮 -->
+                <div class="pool-table">
+                  <div class="pool-row pool-row-head">
+                    <span class="pr-check">选</span>
+                    <span class="pr-sym">币种</span>
+                    <span class="pr-name">名称</span>
+                    <span class="pr-num" :class="bestKey==='total_return'?'hl':''" @click="setBestKey('total_return')" title="回测总收益">总收益</span>
+                    <span class="pr-num" :class="bestKey==='sharpe'?'hl':''" @click="setBestKey('sharpe')" title="夏普比率">夏普</span>
+                    <span class="pr-num" :class="bestKey==='max_drawdown'?'hl':''" @click="setBestKey('max_drawdown')" title="最大回撤 (越低越好)">回撤</span>
+                    <span class="pr-num" :class="bestKey==='win_rate'?'hl':''" @click="setBestKey('win_rate')" title="胜率">胜率</span>
+                  </div>
+                  <label v-for="s in symbolPoolRows" :key="s.symbol"
+                    :class="['pool-row', { active: poolSelection.has(s.symbol), highlight: s.highlight }]">
+                    <span class="pr-check">
+                      <input type="checkbox" :checked="poolSelection.has(s.symbol)"
+                        @change="togglePoolSymbol(s.symbol)" />
+                    </span>
+                    <span class="pr-sym">{{ s.symbol }}</span>
+                    <span class="pr-name">{{ s.name || '—' }}</span>
+                    <span class="pr-num" :class="s.metrics?.total_return >= 0 ? 'pos' : 'neg'">{{ s.metrics ? fmtPct(s.metrics.total_return) : '—' }}</span>
+                    <span class="pr-num" :class="(s.metrics?.sharpe ?? 0) >= 1 ? 'pos' : (s.metrics?.sharpe ?? 0) < 0 ? 'neg' : ''">{{ s.metrics ? fmtNum(s.metrics.sharpe) : '—' }}</span>
+                    <span class="pr-num neg">{{ s.metrics ? fmtPct(s.metrics.max_drawdown) : '—' }}</span>
+                    <span class="pr-num">{{ s.metrics ? fmtPct(s.metrics.win_rate) : '—' }}</span>
                   </label>
-                  <div v-if="!filteredPoolList.length" class="pool-empty">未找到币种</div>
+                  <div v-if="!symbolPoolRows.length" class="pool-empty">未找到币种</div>
+                </div>
+                <div v-if="symbolPoolRows.some(s => s.highlight)" class="pool-legend">
+                  🟡 高亮 = 选中指标排名前 1/3 且未选中 (点选加入)
                 </div>
               </div>
             </transition>
@@ -725,6 +880,28 @@ function drawMultiChart() {
       <div v-if="!result && !multiResults && !loading && !error" class="empty-state">
         <div class="icon">📈</div>
         <div>选择策略 + K线周期, 自动扫描全池</div>
+      </div>
+
+      <div v-if="result || multiResults" class="chart-toolbar">
+        <div class="axis-group">
+          <span class="axis-label">Y轴:</span>
+          <button :class="{ active: yAxisMode === 'auto' }" @click="yAxisMode = 'auto'">自适应</button>
+          <button :class="{ active: yAxisMode === 'symmetric' }" @click="yAxisMode = 'symmetric'">0居中</button>
+          <button :class="{ active: yAxisMode === 'custom' }" @click="yAxisMode = 'custom'">自定义</button>
+          <template v-if="yAxisMode === 'custom'">
+            <input type="number" v-model.number="yAxisMin" step="0.1" placeholder="min %" class="axis-input" />
+            <span>~</span>
+            <input type="number" v-model.number="yAxisMax" step="0.1" placeholder="max %" class="axis-input" />
+          </template>
+        </div>
+        <div class="axis-group">
+          <span class="axis-label">X轴:</span>
+          <input type="text" v-model="xAxisStart" placeholder="开始 YYYYMMDD" class="axis-input x-input" />
+          <span>~</span>
+          <input type="text" v-model="xAxisEnd" placeholder="结束 YYYYMMDD" class="axis-input x-input" />
+        </div>
+        <button class="btn-secondary small" @click="resetAxisRange" title="重置所有坐标轴">↺ 重置</button>
+        <span class="axis-hint">提示: 两条都从 100% 起步时会平行, 用「0居中」显示相对涨跌</span>
       </div>
 
       <div v-if="result || multiResults" id="equity-chart" class="chart"></div>
@@ -939,6 +1116,7 @@ function drawMultiChart() {
   width: 80px;
 }
 .cfg input:focus { border-color: var(--yellow); }
+.cfg .unit-hint { color: var(--text-muted); font-weight: 400; font-size: 10px; margin-left: 2px; }
 .desc-box {
   flex: 1;
   background: rgba(30,136,229,0.08);
@@ -1080,6 +1258,67 @@ function drawMultiChart() {
   max-height: 280px;
   overflow-y: auto;
 }
+
+/* 币池表格: 含关键指标 + 高亮 */
+.pool-table {
+  display: flex;
+  flex-direction: column;
+  max-height: 360px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.pool-row {
+  display: grid;
+  grid-template-columns: 32px 90px 1fr 70px 60px 70px 60px;
+  gap: 4px;
+  align-items: center;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-family: 'Consolas', monospace;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.pool-row:last-child { border-bottom: 0; }
+.pool-row-head {
+  position: sticky; top: 0;
+  background: var(--bg-elevated);
+  font-size: 10px; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: 0.3px;
+  cursor: default; font-weight: 600;
+}
+.pool-row-head .pr-num { cursor: pointer; }
+.pool-row-head .pr-num:hover { color: var(--yellow); }
+.pool-row-head .pr-num.hl { color: var(--yellow); }
+.pool-row:hover { background: var(--bg-elevated); }
+.pool-row.active { background: rgba(240,185,11,0.08); }
+.pool-row.highlight { background: rgba(240,185,11,0.04); }
+.pool-row.highlight::before {
+  content: '★';
+  position: absolute; left: -2px;
+  color: var(--yellow);
+  font-size: 10px;
+}
+.pool-row { position: relative; }
+.pool-row.highlight .pr-sym { color: var(--yellow); font-weight: 600; }
+.pr-check { text-align: center; }
+.pr-sym { font-weight: 600; color: var(--text); }
+.pr-name {
+  color: var(--text-secondary); font-family: inherit; font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pr-num { text-align: right; }
+.pr-num.pos { color: var(--green); }
+.pr-num.neg { color: var(--red); }
+.pool-row input[type="checkbox"] { accent-color: var(--yellow); cursor: pointer; }
+.pool-legend {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 0;
+  border-top: 1px dashed var(--border);
+}
 .pool-chip {
   display: flex;
   align-items: center;
@@ -1217,6 +1456,70 @@ function drawMultiChart() {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 8px;
+}
+
+/* 图表工具栏 (坐标轴控制) */
+.chart-toolbar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+}
+.axis-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.axis-label { color: var(--text-muted); font-weight: 600; margin-right: 2px; }
+.axis-group button {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.axis-group button:hover:not(.active) { border-color: var(--yellow); }
+.axis-group button.active {
+  background: rgba(240,185,11,0.15);
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+.axis-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'Consolas', monospace;
+  width: 80px;
+  outline: none;
+}
+.axis-input.x-input { width: 100px; }
+.axis-input:focus { border-color: var(--yellow); }
+.btn-secondary.small {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.btn-secondary.small:hover { border-color: var(--yellow); color: var(--yellow); }
+.axis-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
 }
 .ranking-section {
   background: var(--bg-card);

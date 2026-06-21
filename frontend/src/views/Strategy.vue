@@ -173,8 +173,9 @@ onMounted(async () => {
       <div class="card">
         <div class="form-row">
           <div class="form-group grow">
-            <label>名称</label>
-            <input type="text" v-model="editForm.name" @input="validate" />
+            <label>名称 <span class="hint-required">*</span></label>
+            <input type="text" v-model="editForm.name" @input="validate" placeholder="给策略起个名字" />
+            <span class="param-hint">命名建议: <code>技术 + 方向 + 周期</code>, 例如 <code>双均线趋势-4h</code> / <code>RSI反转-1h</code> / <code>量价齐升-1d</code></span>
           </div>
           <div class="form-group">
             <label>分类</label>
@@ -190,8 +191,9 @@ onMounted(async () => {
         </div>
         <div class="form-row">
           <div class="form-group grow">
-            <label>说明</label>
-            <input type="text" v-model="editForm.description" @input="validate" />
+            <label>说明 <span class="hint-muted">(选填, 用于快速回忆这个策略做什么)</span></label>
+            <input type="text" v-model="editForm.description" @input="validate"
+              placeholder="一句话讲清楚: 何时买入, 何时卖出, 适用什么行情" />
           </div>
         </div>
         <div class="form-row">
@@ -307,6 +309,17 @@ onMounted(async () => {
 .form-group textarea { width: 100%; resize: vertical; }
 .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--yellow); }
 .form-group .hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.form-group .param-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; line-height: 1.4; }
+.form-group .param-hint code {
+  background: var(--bg-elevated);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--yellow);
+  font-family: 'Consolas', monospace;
+  font-size: 10px;
+}
+.hint-required { color: var(--red); margin-left: 2px; }
+.hint-muted { color: var(--text-muted); font-weight: 400; font-size: 10px; }
 .editor-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .editor-tabs { display: flex; gap: 4px; }
 .editor-tabs button {

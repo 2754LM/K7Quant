@@ -119,8 +119,8 @@ onUnmounted(() => window.removeEventListener('navigate', navigate))
               <span class="badge yellow" :title="`${symbolCount} 个币种被激活`">
                 {{ (cfg?.active_symbols?.length ?? symbolCount) }} 活跃
               </span>
-              <span class="badge" :title="总币种数">{{ symbolCount }} 总</span>
-              <span class="badge" :title="总策略数">{{ strategyCount }} 策略</span>
+              <span class="badge" :title="`总币种数: ${symbolCount}`">{{ symbolCount }} 总</span>
+              <span class="badge" :title="`总策略数: ${strategyCount}`">{{ strategyCount }} 策略</span>
               <SystemLogPanel />
             </div>
           </header>

@@ -329,17 +329,18 @@ def create_strategy(name: str, description: str, category: str, code: str,
         return obj.id
 
 
-def update_strategy(strategy_id: int, name: str, description: str, category: str,
-                     code: str, params_schema: dict):
+def update_strategy(strategy_id: int, name: str = None, description: str = None,
+                     category: str = None, code: str = None, params_schema: dict = None):
+    """部分更新: 传入 None 的字段保持原值"""
     with transaction() as s:
         obj = s.get(Strategy, strategy_id)
         if obj is None:
             return
-        obj.name = name
-        obj.description = description
-        obj.category = category
-        obj.code = code
-        obj.params_schema = json.dumps(params_schema or {}, ensure_ascii=False)
+        if name is not None: obj.name = name
+        if description is not None: obj.description = description
+        if category is not None: obj.category = category
+        if code is not None: obj.code = code
+        if params_schema is not None: obj.params_schema = json.dumps(params_schema, ensure_ascii=False)
 
 
 def delete_strategy(strategy_id: int):

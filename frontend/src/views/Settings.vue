@@ -162,13 +162,14 @@ function applyTooltips() {
           <n-select v-model:value="bt.default_timeframe" :options="TIMEFRAME_OPTS" />
         </div>
         <div class="form-row">
-          <label>开始日期</label>
+          <label>默认开始日期</label>
           <n-input v-model:value="bt.start_date" placeholder="YYYYMMDD" />
+          <span class="hint">「智能回测」页面打开时使用此值作为起始, 之后用户可自行修改</span>
         </div>
         <div class="form-row">
-          <label>结束日期</label>
+          <label>默认结束日期</label>
           <n-input v-model:value="bt.end_date" placeholder="YYYYMMDD 或 auto" />
-          <span class="hint">"auto" 跟随当前日期</span>
+          <span class="hint">"auto" 跟随当前日期; 同样作为「智能回测」页面的默认值</span>
         </div>
       </div>
       <n-button type="primary" @click="saveBt" :loading="saving">保存</n-button>
