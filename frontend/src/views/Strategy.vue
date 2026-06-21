@@ -7,7 +7,6 @@ import {
 
 import StrategyPicker from '../components/StrategyPicker.vue'
 import StateView from '../components/StateView.vue'
-import MonacoEditor from '../components/MonacoEditor.vue'
 
 const cfg = inject('cfg')
 const reloadCfg = inject('reload')
@@ -22,7 +21,6 @@ const error = ref('')
 const msg = ref('')
 const validation = ref(null)
 const dslDocs = ref({ syntax: '', examples: [] })
-const editorMode = ref('code')   // 'expr' = 表达式编辑器 | 'code' = Monaco 代码编辑器
 let validationTimer = null
 
 const selectedStrategy = computed(() => strategies.value.find(s => s.id === selectedId.value))
@@ -198,19 +196,9 @@ onMounted(async () => {
         </div>
         <div class="form-row">
           <div class="form-group grow">
-            <div class="editor-head">
-              <label>策略代码 (DSL)</label>
-              <div class="editor-tabs">
-                <button type="button" :class="{ active: editorMode === 'expr' }"
-                  @click="editorMode = 'expr'">表达式</button>
-                <button type="button" :class="{ active: editorMode === 'code' }"
-                  @click="editorMode = 'code'">代码编辑器</button>
-              </div>
-            </div>
-            <textarea v-if="editorMode === 'expr'" v-model="editForm.code"
-              @input="validate" rows="14"></textarea>
-            <MonacoEditor v-else v-model="editForm.code" language="python"
-              height="340px" @update:modelValue="validate" />
+            <label>策略代码 (DSL)</label>
+            <textarea v-model="editForm.code" @input="validate" rows="16"
+              class="code-area"></textarea>
             <div class="hint">
               signal = 表达式 (必需) | 止损/止盈/仓位/频率 (可选)
             </div>
@@ -321,16 +309,19 @@ onMounted(async () => {
 .hint-required { color: var(--red); margin-left: 2px; }
 .hint-muted { color: var(--text-muted); font-weight: 400; font-size: 10px; }
 .editor-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.editor-tabs { display: flex; gap: 4px; }
-.editor-tabs button {
+.code-area {
+  width: 100%;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  line-height: 1.5;
   background: var(--bg);
   border: 1px solid var(--border);
-  color: var(--text-secondary);
-  padding: 4px 12px;
   border-radius: 6px;
-  font-size: 12px;
+  padding: 10px 12px;
+  color: var(--text);
+  resize: vertical;
 }
-.editor-tabs button.active { background: var(--yellow); color: #000; font-weight: 600; }
+.code-area:focus { outline: none; border-color: var(--yellow); }
 .validation { margin-bottom: 12px; font-size: 12px; }
 .validation .ok { color: var(--green); }
 .validation .err { color: var(--red); }

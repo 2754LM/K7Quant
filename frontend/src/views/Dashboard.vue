@@ -9,7 +9,6 @@ import TimeframePicker from '../components/TimeframePicker.vue'
 import DateRangePicker from '../components/DateRangePicker.vue'
 import StateView from '../components/StateView.vue'
 import HelpTip from '../components/HelpTip.vue'
-import { describePeriod, tfLabel } from '../utils/timeframe'
 
 const cfg = inject('cfg')
 const reloadCfg = inject('reload')
@@ -56,17 +55,6 @@ function applyDefaultFromSettings() {
   settingsApplied.value = true
 }
 watch(() => cfg.value?.settings?.backtest, applyDefaultFromSettings, { immediate: true, deep: true })
-
-// 参数说明: 跟「周期」相关的字段, 显示实际时长 (如 MA7 + 4h => ~28小时)
-const PERIOD_KEYS = new Set(['ma_short', 'ma_long', 'rsi_period', 'macd_fast', 'macd_slow', 'macd_signal',
-  'lookback', 'break_period', 'period', 'adx_threshold', 'oversold', 'overbought', 'top_n', 'hold', 'lookback_n'])
-function isPeriodKey(key) { return PERIOD_KEYS.has(key) }
-function describeParam(key, val) {
-  if (!val || isNaN(Number(val))) return `${val || '?'} 根`
-  // oversold/overbought 是阈值不是周期, 不算时间
-  if (key === 'oversold' || key === 'overbought' || key === 'adx_threshold') return `${val} ${activeStrategy.value?.params_schema?.[key]?.unit || ''}`
-  return describePeriod(val, params.value.timeframe)
-}
 
 // ---------- 币池选择 ----------
 const poolMode = ref('all')  // 'all' | 'custom'
@@ -725,14 +713,13 @@ function drawMultiChart() {
         <div v-for="(schema, key) in (activeStrategy?.params_schema || {})" :key="key" class="cfg">
           <label>
             {{ schema.label || key }}
-            <span v-if="schema.unit && isPeriodKey(key)" class="unit-hint">(~{{ describeParam(key, params[key]) }})</span>
-            <span v-else-if="schema.unit" class="unit-hint">({{ schema.unit }})</span>
+            <span v-if="schema.unit" class="unit-hint">({{ schema.unit }})</span>
           </label>
           <input type="number" v-model.number="params[key]"
             :min="schema.min"
             :max="schema.max"
             @change="run"
-            :title="schema.hint ? `${schema.hint}\n实际时长: ${describeParam(key, params[key])}` : `实际时长: ${describeParam(key, params[key])}`" />
+            :title="schema.hint || ''" />
         </div>
         <div class="cfg date-cfg">
           <label>区间</label>

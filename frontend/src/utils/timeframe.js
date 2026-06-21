@@ -18,26 +18,3 @@ export function tfMinutes(tf) {
 export function tfLabel(tf) {
   return TF_LABEL[tf] || tf
 }
-
-// 把「N 根 K 线」换算成实际时长字符串
-// 例: describePeriod(7, '1d') => '7天', describePeriod(7, '4h') => '28小时'
-export function describePeriod(period, tf) {
-  const totalMin = (Number(period) || 0) * tfMinutes(tf)
-  if (totalMin <= 0) return `${period} 根`
-  if (totalMin < 60) return `${totalMin}分钟`
-  if (totalMin < 1440) {
-    const h = totalMin / 60
-    return Number.isInteger(h) ? `${h}小时` : `${h.toFixed(1)}小时`
-  }
-  if (totalMin < 10080) {
-    const d = totalMin / 1440
-    return Number.isInteger(d) ? `${d}天` : `${d.toFixed(1)}天`
-  }
-  const w = totalMin / 10080
-  return Number.isInteger(w) ? `${w}周` : `${w.toFixed(1)}周`
-}
-
-// 把「周期」参数渲染成 "周期 (~7天)" 的标签, 方便用户看
-export function periodLabelWithTime(period, tf) {
-  return `${period} (~${describePeriod(period, tf)})`
-}

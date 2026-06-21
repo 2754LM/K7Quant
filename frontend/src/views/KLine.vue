@@ -4,7 +4,7 @@ import { getKline } from '../api'
 import * as echarts from 'echarts'
 
 import StateView from '../components/StateView.vue'
-import { describePeriod, tfLabel } from '../utils/timeframe'
+import { tfLabel } from '../utils/timeframe'
 import { synthRecentTrades, synthOrderBook, normalizeToPercent } from '../utils/orderbook'
 
 const cfg = inject('cfg')
@@ -663,7 +663,6 @@ watch(timeframe, () => applySmartDefault())
             <input type="checkbox" :value="p" v-model="mainIndicators.ma.periods" />
             <span>{{ p }}</span>
           </label>
-          <span class="period-hint">~{{ describePeriod(7, timeframe) }}示例</span>
         </div>
         <label class="ib-toggle" :class="{ on: mainIndicators.ema.enabled }">
           <input type="checkbox" v-model="mainIndicators.ema.enabled" />
