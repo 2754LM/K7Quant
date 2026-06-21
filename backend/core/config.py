@@ -19,6 +19,8 @@ DEFAULTS = {
     "data_source": {
         "exchange": "binance",
         "api_base": "https://api.binance.com",
+        # 模拟盘 (Demo Mode) REST 基址; 鉴权方式与正式盘相同
+        "demo_api_base": "https://demo-api.binance.com",
         "timeout": 20,
         "retries": 3,
         # 代理设置 (国内用户必填)
@@ -49,6 +51,7 @@ DEFAULTS = {
     "trading": {
         "enabled": False,             # 模拟/实盘开关
         "mode": "simulation",         # simulation / live
+        "recv_window": 5000,          # 签名请求有效窗口 (ms), 规避时间戳误差
         "max_position_pct": 0.3,      # 单币种最大仓位
         "max_total_pct": 0.95,        # 最大总仓位
         "stop_loss_pct": 0.05,        # 止损

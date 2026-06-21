@@ -58,6 +58,22 @@ Binance API 在中国大陆需要走代理，两种方式任选其一：
 
 在「💾 数据」页点「测试连接」可确认当前是直连还是走代理、是否连通。
 
+### 🧪 模拟盘 (Binance Demo Mode)
+
+「💱 交易」页接入 Binance 模拟交易沙盒（`demo-api.binance.com`），可用虚拟资金真实下单/撤单、查询余额与委托。
+
+1. 登录 Binance → **模拟交易** → **API 密钥管理** → 创建 API 密钥。
+2. 复制 `.env.example` 为 `.env`，填入密钥（`.env` 已被 git 忽略，**切勿提交真实密钥**）：
+   ```bash
+   cp .env.example .env
+   # 填入 BINANCE_DEMO_API_KEY / BINANCE_DEMO_API_SECRET
+   ```
+   也可直接用环境变量：`export BINANCE_DEMO_API_KEY=... BINANCE_DEMO_API_SECRET=...`
+3. 确保「设置 → 交易」的模式为 `simulation`（模拟盘），重启后端。
+4. 打开「交易」页，状态条显示「已连接沙盒账户」即可下单。国内访问 demo 端点同样走上面的代理配置。
+
+> ⚠️ 模拟盘行情与正式盘相似但**不等同真实行情**，沙盒里有效的策略在正式所未必有效。本期仅 REST，**实盘模式暂不支持**。
+
 ## 📁 项目结构
 
 ```
@@ -159,6 +175,12 @@ K7Quant/
 | PUT | `/api/config/data-source` | 数据源 + 代理 |
 | PUT | `/api/config/ui` | 主题 / 问号提示 |
 | PUT | `/api/config/trading` | 模拟/实盘参数 |
+| GET | `/api/trade/connectivity` | 模拟盘连通性 + 凭据校验 |
+| GET | `/api/trade/account` | 模拟盘账户余额 (签名) |
+| GET | `/api/trade/open-orders?symbol=` | 当前委托 (签名) |
+| POST | `/api/trade/order` | 下单 (签名) |
+| DELETE | `/api/trade/order?symbol=&order_id=` | 撤单 (签名) |
+| GET | `/api/trade/my-trades?symbol=` | 成交历史 (签名) |
 | POST | `/api/backtest/single` | 单标的回测 |
 | POST | `/api/backtest/scan` | 池子扫描 |
 | POST | `/api/backtest/code` | 用临时 DSL 代码回测 |

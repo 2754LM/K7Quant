@@ -445,7 +445,8 @@ def insert_trade(mode: str, symbol: str, side: str, price: float,
 
 def list_trades(mode: str = None, limit: int = 100) -> list:
     with transaction() as s:
-        q = s.query(Trade).order_by(Trade.id.desc()).limit(limit)
+        q = s.query(Trade)
         if mode:
             q = q.filter(Trade.mode == mode)
+        q = q.order_by(Trade.id.desc()).limit(limit)
         return [r.to_dict() for r in q.all()]
