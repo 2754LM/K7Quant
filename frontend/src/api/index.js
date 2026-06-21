@@ -76,6 +76,7 @@ export const clearDataCache = (timeframe, symbol) =>
   api.delete('/data/cache', { params: { timeframe, symbol } })
 export const listExchangeSymbols = () => api.get('/data/exchange-symbols')
 export const testConnection = () => api.get('/data/test-connection')
+export const getExchangeInfo = (symbol) => api.get(`/data/exchange-info/${symbol}`)
 
 export const getSystemConfig = () => api.get('/config')
 export const updateBacktestConfig = (data) => api.put('/config/backtest', data)

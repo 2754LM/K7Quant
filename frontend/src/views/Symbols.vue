@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, inject } from 'vue'
-import { listSymbols, setActiveSymbols, listExchangeSymbols } from '../api'
+import { listSymbols, setActiveSymbols, listExchangeSymbols, getExchangeInfo } from '../api'
 
 import StateView from '../components/StateView.vue'
 
@@ -14,6 +14,8 @@ const error = ref('')
 const activeSet = ref(new Set())
 const selectedDetail = ref(null)
 const search = ref('')
+const exchangeInfo = ref(null)
+const exchangeInfoLoading = ref(false)
 
 const filtered = computed(() => {
   if (!search.value) return symbols.value
@@ -61,6 +63,21 @@ function toggle(symbol) {
   else activeSet.value.add(symbol)
 }
 
+// 点击币种 → 拉 Binance exchangeInfo
+async function selectDetail(sym) {
+  selectedDetail.value = sym
+  exchangeInfo.value = null
+  exchangeInfoLoading.value = true
+  try {
+    const res = await getExchangeInfo(sym)
+    exchangeInfo.value = res.data
+  } catch (e) {
+    exchangeInfo.value = { error: e.message }
+  } finally {
+    exchangeInfoLoading.value = false
+  }
+}
+
 async function save() {
   try {
     await setActiveSymbols([...activeSet.value])
@@ -96,8 +113,8 @@ onMounted(() => {
       <StateView :loading="loading" :error="error" />
       <div v-if="!loading && !error" class="symbol-grid">
         <button v-for="s in filtered" :key="s.symbol"
-          :class="['sym-btn', { active: activeSet.has(s.symbol) }]"
-          @click="toggle(s.symbol)">
+          :class="['sym-btn', { active: activeSet.has(s.symbol), detail: selectedDetail === s.symbol }]"
+          @click="toggle(s.symbol); selectDetail(s.symbol)">
           <div class="sym-top">
             <span class="rank">#{{ s.market_cap_rank || '?' }}</span>
             <span v-if="activeSet.has(s.symbol)" class="check">✓</span>
@@ -120,6 +137,62 @@ onMounted(() => {
       <div class="detail-tags">
         <span v-for="t in detail.tags" :key="t" class="tag">#{{ t }}</span>
       </div>
+
+      <!-- Binance exchangeInfo 实时信息 -->
+      <div class="exchange-info">
+        <h4 class="ei-title">📡 Binance 实时信息</h4>
+        <div v-if="exchangeInfoLoading" class="ei-loading">加载中...</div>
+        <div v-else-if="exchangeInfo?.error" class="ei-error">⚠ {{ exchangeInfo.error }} (网络不可用)</div>
+        <div v-else-if="exchangeInfo" class="ei-body">
+          <div class="ei-row">
+            <span class="ei-lbl">状态</span>
+            <span class="ei-val" :class="{ tradable: exchangeInfo.status === 'TRADING' }">
+              {{ exchangeInfo.status }}
+            </span>
+          </div>
+          <div class="ei-row">
+            <span class="ei-lbl">基础/计价</span>
+            <span class="ei-val">{{ exchangeInfo.base_asset }} / {{ exchangeInfo.quote_asset }}</span>
+          </div>
+          <div class="ei-row">
+            <span class="ei-lbl">价格精度</span>
+            <span class="ei-val">{{ exchangeInfo.quote_asset_precision }} 位</span>
+          </div>
+          <div class="ei-row">
+            <span class="ei-lbl">数量精度</span>
+            <span class="ei-val">{{ exchangeInfo.base_asset_precision }} 位</span>
+          </div>
+          <div v-if="exchangeInfo.filters?.PRICE_FILTER" class="ei-row">
+            <span class="ei-lbl">价格档位</span>
+            <span class="ei-val">{{ exchangeInfo.filters.PRICE_FILTER.tickSize }}</span>
+          </div>
+          <div v-if="exchangeInfo.filters?.LOT_SIZE" class="ei-row">
+            <span class="ei-lbl">数量档位</span>
+            <span class="ei-val">{{ exchangeInfo.filters.LOT_SIZE.stepSize }} (最小 {{ exchangeInfo.filters.LOT_SIZE.minQty }})</span>
+          </div>
+          <div v-if="exchangeInfo.filters?.MIN_NOTIONAL" class="ei-row">
+            <span class="ei-lbl">最小成交额</span>
+            <span class="ei-val">{{ exchangeInfo.filters.MIN_NOTIONAL.minNotional }} {{ exchangeInfo.quote_asset }}</span>
+          </div>
+          <div v-if="exchangeInfo.filters?.PERCENT_PRICE" class="ei-row">
+            <span class="ei-lbl">价格偏离限制</span>
+            <span class="ei-val">×{{ exchangeInfo.filters.PERCENT_PRICE.multiplierUp }} / ÷{{ exchangeInfo.filters.PERCENT_PRICE.multiplierDown }}</span>
+          </div>
+          <div class="ei-row">
+            <span class="ei-lbl">允许操作</span>
+            <span class="ei-val">
+              <span v-for="p in exchangeInfo.permissions" :key="p" class="perm-tag">{{ p }}</span>
+            </span>
+          </div>
+          <div class="ei-row">
+            <span class="ei-lbl">订单类型</span>
+            <span class="ei-val">
+              <span v-for="o in exchangeInfo.order_types" :key="o" class="perm-tag">{{ o }}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
       <div class="detail-actions">
         <button :class="['btn-primary', { active: activeSet.has(detail.symbol) }]"
           @click="toggle(detail.symbol)">
@@ -132,7 +205,7 @@ onMounted(() => {
     <div class="active-list-card" v-if="activeList.length">
       <h3>当前活跃币种 ({{ activeList.length }})</h3>
       <div class="active-grid">
-        <div v-for="s in activeList" :key="s.symbol" class="active-item" @click="selectedDetail = s.symbol">
+        <div v-for="s in activeList" :key="s.symbol" class="active-item" @click="selectDetail(s.symbol)">
           <div class="sym">{{ s.symbol }}</div>
           <div class="name">{{ s.name_zh }}</div>
           <button class="rm" @click.stop="toggle(s.symbol)">×</button>
@@ -249,6 +322,58 @@ onMounted(() => {
 }
 .detail-actions { display: flex; gap: 8px; }
 .btn-primary.active { background: var(--green); color: #fff; }
+
+/* ============ Binance 实时信息 ============ */
+.exchange-info {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+.ei-title {
+  font-size: 13px;
+  color: var(--yellow);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ei-loading { color: var(--text-muted); font-size: 12px; padding: 8px; }
+.ei-error {
+  color: var(--orange, #f0b90b);
+  font-size: 12px;
+  padding: 8px;
+  background: rgba(240,185,11,0.08);
+  border-radius: 4px;
+}
+.ei-body { display: flex; flex-direction: column; gap: 4px; }
+.ei-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 12px;
+  font-size: 12px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.ei-row:last-child { border-bottom: none; }
+.ei-lbl { color: var(--text-muted); }
+.ei-val { color: var(--text); font-family: 'Consolas', monospace; word-break: break-all; }
+.ei-val.tradable { color: var(--green); font-weight: 600; }
+.perm-tag {
+  display: inline-block;
+  background: var(--bg-elevated);
+  color: var(--yellow);
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  margin-right: 4px;
+  margin-bottom: 2px;
+}
+.sym-btn.detail {
+  border-color: var(--yellow);
+  background: rgba(240,185,11,0.05);
+}
 .active-list-card h3 { font-size: 16px; margin-bottom: 12px; }
 .active-grid {
   display: grid;

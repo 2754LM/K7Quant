@@ -22,6 +22,13 @@ def exchange_symbols():
     return {"symbols": data_service.get_symbols()}
 
 
+@router.get("/exchange-info/{symbol}")
+def exchange_info(symbol: str):
+    """单个币种的交易所元信息 (filters, permissions, 状态) - 用于币种详情页"""
+    from backend.data.fetcher import get_fetcher
+    return get_fetcher().get_symbol_info(symbol)
+
+
 @router.get("/test-connection")
 def test_connection():
     # 包一层 binance, 与前端 DataPanel 读取的 res.data.binance 对齐

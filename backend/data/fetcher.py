@@ -114,6 +114,43 @@ class BinanceFetcher:
             log.warning(f"获取交易对失败: {e}")
             return []
 
+    def get_symbol_info(self, symbol: str) -> dict:
+        """获取单个币种的交易所元信息 (filters / permissions / 状态)"""
+        try:
+            data = self._request("/api/v3/exchangeInfo", {"symbol": symbol.upper()})
+        except Exception as e:
+            return {"error": str(e)}
+        syms = data.get("symbols", [])
+        if not syms:
+            return {"error": f"未找到 {symbol}"}
+        s = syms[0]
+        # 提取关键 filter: PRICE_FILTER / LOT_SIZE / MIN_NOTIONAL
+        filters = {}
+        for f in s.get("filters", []):
+            t = f.get("filterType")
+            if t in ("PRICE_FILTER", "LOT_SIZE", "MIN_NOTIONAL", "MARKET_LOT_SIZE",
+                     "MAX_NUM_ORDERS", "PERCENT_PRICE"):
+                filters[t] = {k: f.get(k) for k in (
+                    "minPrice", "maxPrice", "tickSize",
+                    "minQty", "maxQty", "stepSize",
+                    "minNotional", "applyToMarket", "avgPriceMins",
+                    "multiplierUp", "multiplierDown", "multiplierDecimal",
+                ) if k in f}
+        return {
+            "symbol": s.get("symbol"),
+            "status": s.get("status"),
+            "base_asset": s.get("baseAsset"),
+            "quote_asset": s.get("quoteAsset"),
+            "base_asset_precision": s.get("baseAssetPrecision"),
+            "quote_precision": s.get("quotePrecision"),
+            "quote_asset_precision": s.get("quoteAssetPrecision"),
+            "order_types": s.get("orderTypes", []),
+            "permissions": s.get("permissions", []),
+            "is_spot_trading_allowed": s.get("isSpotTradingAllowed"),
+            "is_margin_trading_allowed": s.get("isMarginTradingAllowed"),
+            "filters": filters,
+        }
+
     def server_time(self) -> int:
         try:
             data = self._request("/api/v3/time")
