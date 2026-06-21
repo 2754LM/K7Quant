@@ -5,6 +5,7 @@ import * as echarts from 'echarts'
 
 import StateView from '../components/StateView.vue'
 import { describePeriod, tfLabel } from '../utils/timeframe'
+import { synthRecentTrades, synthOrderBook, normalizeToPercent } from '../utils/orderbook'
 
 const cfg = inject('cfg')
 
@@ -21,6 +22,14 @@ const error = ref('')
 const fullscreen = ref(false)
 const tableView = ref('chart')  // 'chart' | 'table'
 
+// ---- 对比币种 ----
+const compareSymbol = ref('')  // 空 = 不对比
+const compareData = ref(null)
+const compareLoading = ref(false)
+
+// ---- 侧边栏 ----
+const sideTab = ref('orderbook')  // 'orderbook' | 'trades' | 'info'
+
 // ---- 指标配置 ----
 const mainIndicators = ref({
   ma: { enabled: true, periods: [5, 10, 20, 30, 60] },
@@ -29,13 +38,14 @@ const mainIndicators = ref({
 })
 const subIndicators = ref({
   volume: true,
-  macd: false,    // MACD 在副图
-  rsi: false,     // RSI 在副图
+  macd: false,
+  rsi: false,
   kdj: false,
 })
 
 // MA 颜色循环
 const MA_COLORS = ['#9b59b6', '#3498db', '#e67e22', '#f1c40f', '#f0b90b', '#e74c3c', '#1abc9c', '#16a085']
+const COMPARE_COLOR = '#02c076'
 
 let chart = null
 
@@ -55,13 +65,21 @@ const filteredSymbols = computed(() => {
     (symbolInfo.value[s]?.name_zh || '').toLowerCase().includes(t)
   )
 })
+const compareOptions = computed(() => allSymbols.value.filter(s => s !== symbol.value))
 const curInfo = computed(() => symbolInfo.value[symbol.value] || {})
+const compareInfo = computed(() => symbolInfo.value[compareSymbol.value] || {})
 const stats = computed(() => data.value?.stats || {})
+const compareStats = computed(() => compareData.value?.stats || {})
 const tableRows = computed(() => {
   if (!data.value?.kline) return []
   return data.value.kline.slice(-300).reverse()
 })
-// 实时价格 (最后一根 K 线收盘)
+
+// 当前 K 线的 OHLC (最后一根)
+const lastBar = computed(() => {
+  if (!data.value?.kline?.length) return null
+  return data.value.kline[data.value.kline.length - 1]
+})
 const lastPrice = computed(() => stats.value?.last_close ?? null)
 const prevClose = computed(() => {
   if (!data.value?.kline || data.value.kline.length < 2) return null
@@ -75,25 +93,49 @@ const priceChangePct = computed(() => {
   if (priceChange.value == null || prevClose.value === 0) return null
   return priceChange.value / prevClose.value
 })
-const high24 = computed(() => stats.value?.max_price)
-const low24 = computed(() => stats.value?.min_price)
-const vol24 = computed(() => {
+// 区间 (用户选的时间段) 的高低
+const rangeHigh = computed(() => stats.value?.max_price)
+const rangeLow = computed(() => stats.value?.min_price)
+const rangeVol = computed(() => {
   if (!data.value?.kline) return null
-  const last = data.value.kline.slice(-Math.max(1, Math.floor(1440 / tfMinutes(timeframe.value))))
-  return last.reduce((s, k) => s + (k.volume || 0), 0)
+  return data.value.kline.reduce((s, k) => s + (k.volume || 0), 0)
 })
+// 「近 24h」等价 (用 N 根近似)
+// 注: 1m 1440 根, 1h 24 根, 1d 1 根
+const tfMinutes = (tf) => {
+  const m = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240, '1d': 1440, '1w': 10080 }
+  return m[tf] || 1
+}
+const N_PER_DAY = 1440
+const recentBars = computed(() => {
+  if (!data.value?.kline) return null
+  const n = Math.max(1, Math.floor(N_PER_DAY / tfMinutes(timeframe.value)))
+  return data.value.kline.slice(-n)
+})
+const high24 = computed(() => recentBars.value?.reduce((m, k) => Math.max(m, k.high), -Infinity))
+const low24 = computed(() => recentBars.value?.reduce((m, k) => Math.min(m, k.low), Infinity))
+const vol24 = computed(() => recentBars.value?.reduce((s, k) => s + (k.volume || 0), 0))
+const open24 = computed(() => recentBars.value?.[0]?.open)
+const change24 = computed(() => {
+  if (lastPrice.value == null || open24.value == null) return null
+  return lastPrice.value - open24.value
+})
+const change24Pct = computed(() => {
+  if (change24.value == null || !open24.value) return null
+  return change24.value / open24.value
+})
+
+// 订单簿 + 最近成交
+const orderBook = computed(() => synthOrderBook(data.value?.kline, lastPrice.value, 12))
+const recentTrades = computed(() => synthRecentTrades(data.value?.kline, 20))
 
 // ---- 加载 ----
 watch([symbol, timeframe], () => load(), { immediate: true })
 watch([startDate, endDate], () => load())
-watch([mainIndicators, subIndicators, fullscreen, tableView], () => {
+watch([mainIndicators, subIndicators, fullscreen, tableView, compareSymbol], () => {
   if (tableView.value === 'chart') nextTick(() => drawChart())
+  if (compareSymbol.value) loadCompare()
 }, { deep: true })
-
-function tfMinutes(tf) {
-  const m = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '4h': 240, '1d': 1440, '1w': 10080 }
-  return m[tf] || 1
-}
 
 async function load() {
   if (!startDate.value || !endDate.value) return
@@ -113,6 +155,23 @@ async function load() {
     error.value = e.message
   } finally {
     loading.value = false
+  }
+}
+
+async function loadCompare() {
+  if (!compareSymbol.value || !startDate.value || !endDate.value) {
+    compareData.value = null
+    return
+  }
+  compareLoading.value = true
+  try {
+    const res = await getKline(compareSymbol.value, timeframe.value, startDate.value, endDate.value)
+    if (!res.data.error) compareData.value = res.data
+    else compareData.value = null
+  } catch (e) {
+    compareData.value = null
+  } finally {
+    compareLoading.value = false
   }
 }
 
@@ -162,7 +221,6 @@ function computeMACD(closes, fast = 12, slow = 26, signal = 9) {
   const dif = emaFast.map((v, i) => v != null && emaSlow[i] != null ? v - emaSlow[i] : null)
   const validDif = dif.filter(v => v != null)
   const deaRaw = computeEMA(validDif, signal)
-  // 把 dea 对齐回 dif 的下标
   const offset = dif.findIndex(v => v != null)
   const dea = new Array(dif.length).fill(null)
   for (let i = 0; i < deaRaw.length; i++) dea[offset + i] = deaRaw[i]
@@ -231,13 +289,11 @@ function drawChart() {
   const lows = kline.map(k => k.low)
   const kValues = kline.map((k) => [k.open, k.close, k.low, k.high])
 
-  // ---- 主图: K线 + 主指标 (MA/EMA/BOLL) ----
   const grids = []
   const xAxes = []
   const yAxes = []
   const series = []
 
-  // 计算需要几个副图
   const subCount = [
     subIndicators.value.volume,
     subIndicators.value.macd,
@@ -245,12 +301,12 @@ function drawChart() {
     subIndicators.value.kdj,
   ].filter(Boolean).length
 
-  const TOTAL_H = 80  // 主图占比 %
-  const SUB_H = subCount > 0 ? Math.min(15, 60 / subCount) : 0
-  const GAP = 2
+  const MAIN_H = 70
+  const SUB_H = subCount > 0 ? Math.min(15, 24 / Math.max(1, subCount)) : 0
+  const GAP = 3
 
-  // 主图网格
-  grids.push({ left: 60, right: 70, top: 30, height: `${TOTAL_H}%` })
+  // 主图
+  grids.push({ left: 50, right: 70, top: 20, height: `${MAIN_H}%` })
   xAxes.push({ type: 'category', data: dates, gridIndex: 0, axisLine: { lineStyle: { color: '#2b3139' } }, axisLabel: { show: false } })
   yAxes.push({ scale: true, gridIndex: 0, position: 'right', splitLine: { lineStyle: { color: '#2b3139', type: 'dashed' } }, axisLabel: { color: '#b7bdc6', fontSize: 11 } })
 
@@ -261,7 +317,20 @@ function drawChart() {
     itemStyle: { color: '#02c076', color0: '#f6465d', borderColor: '#02c076', borderColor0: '#f6465d' }
   })
 
-  // MA 叠加
+  // 对比币种 (归一化到百分比变化)
+  if (compareData.value?.kline?.length) {
+    const norm = normalizeToPercent(compareData.value.kline)
+    series.push({
+      name: compareSymbol.value,
+      type: 'line', data: norm.map(p => [p.date, p.value]),
+      smooth: true, showSymbol: false,
+      xAxisIndex: 0, yAxisIndex: 0,
+      lineStyle: { width: 1.5, color: COMPARE_COLOR, type: 'dashed' },
+      tooltip: { valueFormatter: v => v != null ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : '-' }
+    })
+  }
+
+  // MA
   if (mainIndicators.value.ma.enabled) {
     mainIndicators.value.ma.periods.forEach((p, i) => {
       const ma = computeMA(closes, p)
@@ -289,9 +358,9 @@ function drawChart() {
     series.push({ name: 'BOLL下', type: 'line', data: b.lower, smooth: true, showSymbol: false, xAxisIndex: 0, yAxisIndex: 0, lineStyle: { width: 0.8, color: '#8e44ad', opacity: 0.5 } })
   }
 
-  // ---- 副图: 成交量 / MACD / RSI / KDJ ----
+  // 副图
   let subIdx = 1
-  let topPos = TOTAL_H + GAP
+  let topPos = MAIN_H + GAP
   const subConfigs = []
   if (subIndicators.value.volume) subConfigs.push('volume')
   if (subIndicators.value.macd) subConfigs.push('macd')
@@ -299,7 +368,7 @@ function drawChart() {
   if (subIndicators.value.kdj) subConfigs.push('kdj')
 
   for (const sub of subConfigs) {
-    grids.push({ left: 60, right: 70, top: `${topPos}%`, height: `${SUB_H}%` })
+    grids.push({ left: 50, right: 70, top: `${topPos}%`, height: `${SUB_H}%` })
     xAxes.push({ type: 'category', data: dates, gridIndex: subIdx, axisLine: { lineStyle: { color: '#2b3139' } }, axisLabel: subIdx === subConfigs.length ? { color: '#b7bdc6', fontSize: 11 } : { show: false } })
     yAxes.push({ gridIndex: subIdx, position: 'right', splitLine: { show: false }, axisLabel: { color: '#b7bdc6', fontSize: 10 } })
 
@@ -338,15 +407,26 @@ function drawChart() {
     topPos += SUB_H + GAP
   }
 
-  // dataZoom
   const dataZoom = [
     { type: 'inside', xAxisIndex: grids.map((_, i) => i) },
     { type: 'slider', xAxisIndex: grids.map((_, i) => i), height: 20, bottom: 8, backgroundColor: '#181a20' }
   ]
 
+  // 标记线: 最近价水平线
+  const markLine = lastPrice.value != null ? {
+    silent: true, symbol: 'none',
+    data: [{ yAxis: lastPrice.value, lineStyle: { color: '#f0b90b', type: 'dashed', width: 0.8 }, label: { show: false } }],
+  } : undefined
+
   const option = {
     backgroundColor: 'transparent',
     animation: false,
+    title: {
+      text: compareSymbol.value
+        ? `${symbol.value} (实价) vs ${compareSymbol.value} (%变化)`
+        : `${symbol.value} · ${tfLabel(timeframe.value)}`,
+      left: 8, top: 6, textStyle: { color: '#b7bdc6', fontSize: 12, fontWeight: 'normal' },
+    },
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross', link: [{ xAxisIndex: 'all' }] },
@@ -357,7 +437,6 @@ function drawChart() {
         if (!params || !params.length) return ''
         const candle = params.find(p => p.seriesType === 'candlestick')
         if (!candle) {
-          // 副图 tooltip
           return params.map(p => {
             const v = typeof p.value === 'number' ? p.value.toFixed(2) : p.value
             return `${p.marker} ${p.seriesName}: <b>${v}</b>`
@@ -388,7 +467,7 @@ function drawChart() {
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     grid: grids,
     xAxis: xAxes,
-    yAxis: yAxes,
+    yAxis: yAxes.map((y, i) => i === 0 && markLine ? { ...y, markLine } : y),
     series,
     dataZoom,
   }
@@ -412,9 +491,7 @@ function pickSymbol(s) {
   symbolDropdownOpen.value = false
   symbolSearch.value = ''
 }
-function toggleFullscreen() {
-  fullscreen.value = !fullscreen.value
-}
+function toggleFullscreen() { fullscreen.value = !fullscreen.value }
 
 function fmt(v, d = 2) {
   if (v === null || v === undefined) return '-'
@@ -423,13 +500,24 @@ function fmt(v, d = 2) {
   if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(2) + 'K'
   return Number(v).toFixed(d)
 }
-function fmtPct(v) { return v === null || v === undefined ? '-' : (v * 100).toFixed(2) + '%' }
-function fmtBig(v) {  // 成交量格式化
+function fmtBig(v) {
   if (!v) return '-'
   if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B'
   if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M'
   if (v >= 1e3) return (v / 1e3).toFixed(2) + 'K'
   return v.toFixed(0)
+}
+function fmtPrice(p, base) {
+  if (p == null) return '-'
+  const d = base < 1 ? 6 : base < 10 ? 4 : base < 100 ? 3 : 2
+  return p.toFixed(d)
+}
+function fmtTime(s) {
+  if (!s) return ''
+  // 兼容 2025-06-21 / 20250601 两种格式
+  if (s.length === 10 && s.includes('-')) return s.slice(5)  // 2025-06-21 -> 06-21
+  if (s.length === 8) return `${s.slice(4, 6)}-${s.slice(6, 8)}`  // 20250601 -> 06-01
+  return s
 }
 
 // 快捷日期预设
@@ -457,11 +545,10 @@ function setDatePreset(p) {
   const end = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
   startDate.value = start
   endDate.value = end
-  // 标记: 用户主动选过预设, 后续切换 tf 不再自动覆盖
   if (p.id !== '__smart' && p.id !== '__init') autoRangeDisabled.value = true
 }
+
 watch([startDate, endDate], () => {
-  // 检查当前是否匹配某个 preset
   const now = new Date()
   const todayStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
   if (endDate.value !== todayStr) { activeDatePreset.value = ''; return }
@@ -475,28 +562,22 @@ watch([startDate, endDate], () => {
   activeDatePreset.value = ''
 })
 
-// 初始化 + timeframe 切换时: 智能选默认区间 (避免拖慢首屏)
+// 智能选默认
+const autoRangeDisabled = ref(false)
 function applySmartDefault() {
-  if (autoRangeDisabled.value) return  // 用户手动选过日期后, 不再自动改
+  if (autoRangeDisabled.value) return
   const tf = timeframe.value
   const smartDays = { '1m': 7, '5m': 14, '15m': 30, '30m': 60, '1h': 90, '4h': 180, '1d': 365, '1w': 730 }
   const days = smartDays[tf] || 90
   setDatePreset({ id: '__smart', label: '', days })
 }
-
-onMounted(() => {
-  if (!startDate.value || !endDate.value) applySmartDefault()
-})
-
-// 切换 timeframe 时, 同步重置到合理默认 (避免分钟级 1d 跨 1 年 -> 50万行)
-// 标记 autoRangeDisabled, 用户后续手动选过的就不再被覆盖
-const autoRangeDisabled = ref(false)
+onMounted(() => { if (!startDate.value || !endDate.value) applySmartDefault() })
 watch(timeframe, () => applySmartDefault())
 </script>
 
 <template>
   <div class="kline-binance" :class="{ fullscreen }">
-    <!-- 顶部: 交易对 + 价格信息 (Binance 风格) -->
+    <!-- 顶部: 币种 + 实时报价 (Binance 风格) -->
     <div class="quote-header">
       <div class="symbol-section">
         <div class="symbol-dropdown" :class="{ open: symbolDropdownOpen }">
@@ -529,44 +610,22 @@ watch(timeframe, () => applySmartDefault())
             </div>
           </transition>
         </div>
-        <div class="header-stats">
-          <div class="stat-block">
-            <div class="stat-lbl">{{ symbol }} 价格</div>
-            <div class="stat-val price" :class="priceChange >= 0 ? 'pos' : 'neg'">
-              {{ lastPrice != null ? lastPrice.toFixed(lastPrice < 1 ? 4 : 2) : '-' }}
-            </div>
+        <div class="price-block">
+          <div class="price-main" :class="priceChange >= 0 ? 'pos' : 'neg'">
+            {{ lastPrice != null ? lastPrice.toFixed(lastPrice < 1 ? 4 : 2) : '—' }}
           </div>
-          <div class="stat-block">
-            <div class="stat-lbl">涨跌</div>
-            <div class="stat-val" :class="priceChange >= 0 ? 'pos' : 'neg'">
-              <span v-if="priceChange != null">{{ priceChange >= 0 ? '+' : '' }}{{ priceChange.toFixed(2) }}</span>
-              <span v-if="priceChangePct != null" class="pct">
-                ({{ priceChangePct >= 0 ? '+' : '' }}{{ (priceChangePct * 100).toFixed(2) }}%)
-              </span>
-            </div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-lbl">区间最高</div>
-            <div class="stat-val pos">{{ high24 != null ? high24.toFixed(2) : '-' }}</div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-lbl">区间最低</div>
-            <div class="stat-val neg">{{ low24 != null ? low24.toFixed(2) : '-' }}</div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-lbl">区间成交量</div>
-            <div class="stat-val">{{ fmtBig(vol24) }}</div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-lbl">K线数</div>
-            <div class="stat-val">{{ stats.rows || 0 }}</div>
+          <div class="price-sub">
+            <span class="chg-abs" :class="priceChange >= 0 ? 'pos' : 'neg'">
+              {{ priceChange != null ? (priceChange >= 0 ? '+' : '') + priceChange.toFixed(2) : '—' }}
+            </span>
+            <span class="chg-pct" :class="priceChangePct >= 0 ? 'pos' : 'neg'">
+              {{ priceChangePct != null ? (priceChangePct >= 0 ? '+' : '') + (priceChangePct * 100).toFixed(2) + '%' : '—' }}
+            </span>
           </div>
         </div>
       </div>
       <div class="header-actions">
-        <button class="icon-btn" :class="{ active: fullscreen }" @click="toggleFullscreen" :title="fullscreen ? '退出全屏' : '全屏'">
-          {{ fullscreen ? '⛶' : '⛶' }}
-        </button>
+        <button class="icon-btn" :class="{ active: fullscreen }" @click="toggleFullscreen" :title="fullscreen ? '退出全屏' : '全屏'">⛶</button>
         <button class="icon-btn" @click="load" :disabled="loading" title="刷新数据">🔄</button>
       </div>
     </div>
@@ -587,9 +646,7 @@ watch(timeframe, () => applySmartDefault())
           @click="setDatePreset(p)">
           {{ p.label }}
         </button>
-        <span class="date-range-label">
-          {{ startDate || '?' }} → {{ endDate || '?' }}
-        </span>
+        <span class="date-range-label">{{ fmtTime(startDate) || '?' }} → {{ fmtTime(endDate) || '?' }}</span>
       </div>
     </div>
 
@@ -639,55 +696,167 @@ watch(timeframe, () => applySmartDefault())
       </div>
       <div class="ib-sep">|</div>
       <div class="ib-group">
+        <span class="ib-lbl">对比</span>
+        <select v-model="compareSymbol" class="compare-select">
+          <option value="">无</option>
+          <option v-for="s in compareOptions" :key="s" :value="s">{{ s }}</option>
+        </select>
+      </div>
+      <div class="ib-sep">|</div>
+      <div class="ib-group">
         <button :class="{ active: tableView === 'chart' }" @click="tableView = 'chart'">📈 图表</button>
         <button :class="{ active: tableView === 'table' }" @click="tableView = 'table'">📋 数据</button>
       </div>
     </div>
 
-    <!-- 主图区 -->
-    <div v-if="tableView === 'chart'" class="chart-area">
-      <div v-if="loading && !data" class="loading-state">
-        <div class="spinner"></div>
-        <span>正在获取 {{ symbol }} {{ timeframe }} K线数据...</span>
-      </div>
-      <div v-else-if="!data?.kline?.length && !loading" class="empty-state">
-        <div class="icon">📊</div>
-        <div>选择币种和周期, 加载 K线数据</div>
-      </div>
-      <div v-show="data?.kline?.length" id="kline-chart" class="chart"></div>
-      <div v-if="loading && data" class="loading-overlay">
-        <div class="spinner small"></div>
-      </div>
-    </div>
+    <!-- 主内容区: 图表 + 侧边栏 -->
+    <div class="main-content">
+      <!-- 图表区 -->
+      <div class="chart-column">
+        <div v-if="tableView === 'chart'" class="chart-area">
+          <!-- OHLC 紧凑信息条 (左上角, Binance 风格) -->
+          <div v-if="lastBar" class="ohlc-strip">
+            <span class="oh-item"><span class="oh-lbl">开</span><span class="oh-val">{{ fmtPrice(lastBar.open, lastPrice) }}</span></span>
+            <span class="oh-item"><span class="oh-lbl">高</span><span class="oh-val pos">{{ fmtPrice(lastBar.high, lastPrice) }}</span></span>
+            <span class="oh-item"><span class="oh-lbl">低</span><span class="oh-val neg">{{ fmtPrice(lastBar.low, lastPrice) }}</span></span>
+            <span class="oh-item"><span class="oh-lbl">收</span><span class="oh-val" :class="lastBar.close >= lastBar.open ? 'pos' : 'neg'">{{ fmtPrice(lastBar.close, lastPrice) }}</span></span>
+            <span class="oh-sep"></span>
+            <span class="oh-item"><span class="oh-lbl">24h 涨跌</span><span class="oh-val" :class="change24Pct >= 0 ? 'pos' : 'neg'">{{ change24Pct != null ? (change24Pct >= 0 ? '+' : '') + (change24Pct * 100).toFixed(2) + '%' : '—' }}</span></span>
+            <span class="oh-item"><span class="oh-lbl">24h 高</span><span class="oh-val pos">{{ high24 != null ? fmtPrice(high24, lastPrice) : '—' }}</span></span>
+            <span class="oh-item"><span class="oh-lbl">24h 低</span><span class="oh-val neg">{{ low24 != null ? fmtPrice(low24, lastPrice) : '—' }}</span></span>
+            <span class="oh-item"><span class="oh-lbl">24h 量</span><span class="oh-val">{{ fmtBig(vol24) }}</span></span>
+            <span class="oh-sep"></span>
+            <span class="oh-item" v-if="compareSymbol">
+              <span class="oh-lbl">对比</span>
+              <span class="oh-val" style="color:#02c076">{{ compareSymbol }} (绿虚线, %变化)</span>
+            </span>
+          </div>
+          <div v-if="loading && !data" class="loading-state">
+            <div class="spinner"></div>
+            <span>正在获取 {{ symbol }} {{ timeframe }} K线数据...</span>
+          </div>
+          <div v-else-if="!data?.kline?.length && !loading" class="empty-state">
+            <div class="icon">📊</div>
+            <div>选择币种和周期, 加载 K线数据</div>
+          </div>
+          <div v-show="data?.kline?.length" id="kline-chart" class="chart"></div>
+          <div v-if="loading && data" class="loading-overlay">
+            <div class="spinner small"></div>
+          </div>
+        </div>
 
-    <!-- 数据表 -->
-    <div v-else class="table-area">
-      <div class="table-toolbar">
-        <span class="table-hint">显示最近 {{ tableRows.length }} 条 (共 {{ stats.rows || 0 }} 条)</span>
-        <button class="icon-btn" @click="tableView = 'chart'">📈 切回图表</button>
+        <!-- 数据表 -->
+        <div v-else class="table-area">
+          <div class="table-toolbar">
+            <span class="table-hint">显示最近 {{ tableRows.length }} 条 (共 {{ stats.rows || 0 }} 条)</span>
+            <button class="icon-btn" @click="tableView = 'chart'">📈 切回图表</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th><th>开</th><th>高</th><th>低</th><th>收</th>
+                  <th>涨跌%</th><th>成交量</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in tableRows" :key="r.date">
+                  <td>{{ r.date }}</td>
+                  <td>{{ fmt(r.open) }}</td>
+                  <td class="pos">{{ fmt(r.high) }}</td>
+                  <td class="neg">{{ fmt(r.low) }}</td>
+                  <td :class="r.close > r.open ? 'pos' : 'neg'">{{ fmt(r.close) }}</td>
+                  <td :class="r.close >= r.open ? 'pos' : 'neg'">
+                    {{ r.open ? ((r.close - r.open) / r.open * 100).toFixed(2) : '-' }}%
+                  </td>
+                  <td>{{ fmtBig(r.volume) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>时间</th><th>开</th><th>高</th><th>低</th><th>收</th>
-              <th>涨跌%</th><th>成交量</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in tableRows" :key="r.date">
-              <td>{{ r.date }}</td>
-              <td>{{ fmt(r.open) }}</td>
-              <td class="pos">{{ fmt(r.high) }}</td>
-              <td class="neg">{{ fmt(r.low) }}</td>
-              <td :class="r.close > r.open ? 'pos' : 'neg'">{{ fmt(r.close) }}</td>
-              <td :class="r.close >= r.open ? 'pos' : 'neg'">
-                {{ r.open ? ((r.close - r.open) / r.open * 100).toFixed(2) : '-' }}%
-              </td>
-              <td>{{ fmtBig(r.volume) }}</td>
-            </tr>
-          </tbody>
-        </table>
+
+      <!-- 侧边栏: 订单簿 / 最近成交 / 币种信息 -->
+      <div class="side-panel">
+        <div class="side-tabs">
+          <button :class="{ active: sideTab === 'orderbook' }" @click="sideTab = 'orderbook'">📊 订单簿</button>
+          <button :class="{ active: sideTab === 'trades' }" @click="sideTab = 'trades'">💱 成交</button>
+          <button :class="{ active: sideTab === 'info' }" @click="sideTab = 'info'">ℹ️ 信息</button>
+        </div>
+
+        <!-- 订单簿 -->
+        <div v-if="sideTab === 'orderbook'" class="orderbook">
+          <div class="ob-head">
+            <span>价格 ({{ symbol }})</span>
+            <span>数量</span>
+            <span>累计</span>
+          </div>
+          <!-- 卖盘 (asks, 从高到低) -->
+          <div class="ob-asks">
+            <div v-for="(row, i) in orderBook.asks.slice().reverse()" :key="`a${i}`" class="ob-row ask">
+              <span class="ob-price">{{ fmtPrice(row.price, lastPrice) }}</span>
+              <span class="ob-amount">{{ fmt(row.amount, 0) }}</span>
+              <span class="ob-total">{{ fmt(row.total, 0) }}</span>
+              <span class="ob-bar" :style="{ width: Math.min(100, row.total / Math.max(...orderBook.asks.map(a => a.total), ...orderBook.bids.map(b => b.total), 1) * 100) + '%' }"></span>
+            </div>
+          </div>
+          <!-- 当前价 -->
+          <div class="ob-mid" :class="priceChange >= 0 ? 'pos' : 'neg'">
+            {{ fmtPrice(lastPrice, lastPrice) }}
+            <span class="ob-mid-sub">≈ 实时 (基于 K 线收盘)</span>
+          </div>
+          <!-- 买盘 (bids, 从高到低) -->
+          <div class="ob-bids">
+            <div v-for="(row, i) in orderBook.bids" :key="`b${i}`" class="ob-row bid">
+              <span class="ob-price">{{ fmtPrice(row.price, lastPrice) }}</span>
+              <span class="ob-amount">{{ fmt(row.amount, 0) }}</span>
+              <span class="ob-total">{{ fmt(row.total, 0) }}</span>
+              <span class="ob-bar" :style="{ width: Math.min(100, row.total / Math.max(...orderBook.bids.map(b => b.total), ...orderBook.asks.map(a => a.total), 1) * 100) + '%' }"></span>
+            </div>
+          </div>
+          <div class="ob-hint">⚠ 订单簿为基于历史 K 线的合成深度, 非真实盘口</div>
+        </div>
+
+        <!-- 最近成交 -->
+        <div v-if="sideTab === 'trades'" class="trades">
+          <div class="trades-head">
+            <span>时间</span>
+            <span>价格</span>
+            <span>数量</span>
+          </div>
+          <div class="trades-list">
+            <div v-for="(t, i) in recentTrades" :key="i" class="trade-row" :class="t.side">
+              <span class="t-time">{{ fmtTime(t.time) }}</span>
+              <span class="t-price">{{ fmtPrice(t.price, lastPrice) }}</span>
+              <span class="t-amount">{{ fmt(t.amount, 0) }}</span>
+            </div>
+            <div v-if="!recentTrades.length" class="empty">暂无成交</div>
+          </div>
+        </div>
+
+        <!-- 币种信息 -->
+        <div v-if="sideTab === 'info'" class="info">
+          <div v-if="curInfo.symbol" class="info-section">
+            <h4>{{ curInfo.name_zh }} <span class="muted">({{ curInfo.name_en }})</span></h4>
+            <div class="info-row"><span class="ir-lbl">代码</span><span class="ir-val mono">{{ curInfo.symbol }}</span></div>
+            <div class="info-row"><span class="ir-lbl">分类</span><span class="ir-val">{{ curInfo.category }}</span></div>
+            <div class="info-row" v-if="curInfo.market_cap_rank"><span class="ir-lbl">市值排名</span><span class="ir-val">#{{ curInfo.market_cap_rank }}</span></div>
+            <div class="info-row" v-if="curInfo.tags?.length">
+              <span class="ir-lbl">标签</span>
+              <span class="ir-val tags">
+                <span v-for="t in curInfo.tags" :key="t" class="tag">#{{ t }}</span>
+              </span>
+            </div>
+            <p v-if="curInfo.description" class="info-desc">{{ curInfo.description }}</p>
+          </div>
+          <div v-if="compareSymbol && compareInfo.symbol" class="info-section">
+            <h4>对比: {{ compareInfo.name_zh }} <span class="muted">({{ compareInfo.name_en }})</span></h4>
+            <div class="info-row"><span class="ir-lbl">代码</span><span class="ir-val mono">{{ compareInfo.symbol }}</span></div>
+            <div class="info-row"><span class="ir-lbl">分类</span><span class="ir-val">{{ compareInfo.category }}</span></div>
+            <p class="info-desc">绿虚线为 {{ compareSymbol }} 的累计涨跌幅 (起点 0%), 跟主图 {{ symbol }} 实价对比</p>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -704,7 +873,7 @@ watch(timeframe, () => applySmartDefault())
   overflow: auto;
 }
 
-/* 顶部报价区 (Binance 风) */
+/* 顶部报价区 */
 .quote-header {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -761,13 +930,7 @@ watch(timeframe, () => applySmartDefault())
 }
 .symbol-search-bar input:focus { border-color: var(--yellow); }
 .search-hint { font-size: 10px; color: var(--text-muted); }
-.symbol-list {
-  max-height: 360px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
+.symbol-list { max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .symbol-list button {
   display: flex; align-items: center; gap: 10px;
   background: transparent;
@@ -792,23 +955,16 @@ watch(timeframe, () => applySmartDefault())
 .sym-row { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .sym-code { font-size: 13px; font-weight: 600; font-family: 'Consolas', monospace; }
 .sym-zh { font-size: 10px; color: var(--text-muted); }
-.sym-cat {
-  font-size: 9px;
-  background: var(--bg-elevated);
-  color: var(--text-muted);
-  padding: 1px 6px;
-  border-radius: 8px;
-}
+.sym-cat { font-size: 9px; background: var(--bg-elevated); color: var(--text-muted); padding: 1px 6px; border-radius: 8px; }
 .empty { padding: 30px; text-align: center; color: var(--text-muted); font-size: 12px; }
 
-.header-stats { display: flex; gap: 20px; flex-wrap: wrap; }
-.stat-block { display: flex; flex-direction: column; gap: 2px; }
-.stat-lbl { font-size: 10px; color: var(--text-muted); }
-.stat-val { font-size: 16px; font-weight: 600; font-family: 'Consolas', monospace; }
-.stat-val.price { font-size: 20px; }
-.stat-val.pos { color: var(--green); }
-.stat-val.neg { color: var(--red); }
-.pct { font-size: 12px; margin-left: 4px; }
+.price-block { display: flex; flex-direction: column; gap: 2px; }
+.price-main { font-size: 28px; font-weight: 700; font-family: 'Consolas', monospace; line-height: 1.1; }
+.price-main.pos { color: var(--green); }
+.price-main.neg { color: var(--red); }
+.price-sub { display: flex; gap: 8px; font-size: 13px; font-family: 'Consolas', monospace; }
+.chg-abs.pos, .chg-pct.pos { color: var(--green); }
+.chg-abs.neg, .chg-pct.neg { color: var(--red); }
 
 .header-actions { display: flex; gap: 6px; }
 .icon-btn {
@@ -848,10 +1004,7 @@ watch(timeframe, () => applySmartDefault())
   cursor: pointer;
 }
 .tf-tabs button:hover { background: var(--bg-elevated); }
-.tf-tabs button.active {
-  background: var(--yellow);
-  color: #000;
-}
+.tf-tabs button.active { background: var(--yellow); color: #000; }
 .date-presets { display: flex; gap: 2px; align-items: center; flex-wrap: wrap; }
 .date-presets button {
   background: transparent;
@@ -864,12 +1017,7 @@ watch(timeframe, () => applySmartDefault())
 }
 .date-presets button:hover { background: var(--bg-elevated); }
 .date-presets button.active { background: rgba(240,185,11,0.15); color: var(--yellow); }
-.date-range-label {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-muted);
-  font-family: 'Consolas', monospace;
-}
+.date-range-label { margin-left: auto; font-size: 11px; color: var(--text-muted); font-family: 'Consolas', monospace; }
 
 /* 指标工具栏 */
 .indicator-bar {
@@ -886,9 +1034,7 @@ watch(timeframe, () => applySmartDefault())
 .ib-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ib-lbl { color: var(--text-muted); font-weight: 600; margin-right: 2px; }
 .ib-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: inline-flex; align-items: center; gap: 4px;
   padding: 3px 8px;
   border-radius: 12px;
   background: var(--bg);
@@ -924,24 +1070,62 @@ watch(timeframe, () => applySmartDefault())
   font-size: 12px;
   cursor: pointer;
 }
-.indicator-bar button.active {
-  background: rgba(240,185,11,0.15);
-  border-color: var(--yellow);
-  color: var(--yellow);
+.indicator-bar button.active { background: rgba(240,185,11,0.15); border-color: var(--yellow); color: var(--yellow); }
+.compare-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'Consolas', monospace;
+  outline: none;
+  cursor: pointer;
+}
+.compare-select:focus { border-color: var(--yellow); }
+
+/* 主内容区: 左图表 + 右侧边栏 */
+.main-content {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 12px;
+}
+@media (max-width: 1200px) {
+  .main-content { grid-template-columns: 1fr; }
 }
 
 /* 主图区 */
+.chart-column { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .chart-area {
   position: relative;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px;
-  min-height: 500px;
+  min-height: 580px;
 }
 .chart { height: 600px; }
 .fullscreen .chart-area { height: calc(100vh - 240px); display: flex; flex-direction: column; }
 .fullscreen .chart { flex: 1; min-height: 400px; }
+
+/* OHLC 紧凑信息条 (Binance 风格: 图表顶部一行) */
+.ohlc-strip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 4px 8px 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.oh-item { display: inline-flex; gap: 4px; align-items: baseline; }
+.oh-lbl { color: var(--text-muted); font-size: 10px; }
+.oh-val { font-family: 'Consolas', monospace; font-weight: 600; }
+.oh-val.pos { color: var(--green); }
+.oh-val.neg { color: var(--red); }
+.oh-sep { width: 1px; height: 14px; background: var(--border); }
+
 .loading-state {
   position: absolute; inset: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -1009,6 +1193,121 @@ td {
 tr:hover td { background: var(--bg-elevated); }
 .pos { color: var(--green); }
 .neg { color: var(--red); }
+
+/* 侧边栏 */
+.side-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: 700px;
+}
+.side-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  padding: 0 8px;
+}
+.side-tabs button {
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  padding: 10px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.side-tabs button:hover { color: var(--text); }
+.side-tabs button.active { color: var(--yellow); border-bottom-color: var(--yellow); }
+
+/* 订单簿 */
+.orderbook { padding: 8px; font-family: 'Consolas', monospace; font-size: 11px; overflow: auto; }
+.ob-head, .trade-row, .trades-head {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 6px;
+  padding: 4px 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.ob-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 6px;
+  padding: 3px 6px;
+  font-family: 'Consolas', monospace;
+  font-size: 11px;
+  border-radius: 2px;
+}
+.ob-row:hover { background: var(--bg-elevated); }
+.ob-row.ask .ob-price { color: var(--red); }
+.ob-row.bid .ob-price { color: var(--green); }
+.ob-amount, .ob-total { text-align: right; color: var(--text-secondary); }
+.ob-bar {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  pointer-events: none;
+  border-radius: 2px;
+}
+.ob-row.ask .ob-bar { background: rgba(246,70,93,0.10); }
+.ob-row.bid .ob-bar { background: rgba(2,192,118,0.10); }
+.ob-mid {
+  text-align: center;
+  padding: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  font-family: 'Consolas', monospace;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+.ob-mid.pos { color: var(--green); }
+.ob-mid.neg { color: var(--red); }
+.ob-mid-sub { display: block; font-size: 9px; font-weight: 400; color: var(--text-muted); margin-top: 2px; }
+.ob-hint { padding: 6px 8px; font-size: 10px; color: var(--text-muted); text-align: center; }
+
+/* 最近成交 */
+.trades { padding: 8px; overflow: auto; }
+.trades-list { display: flex; flex-direction: column; }
+.trade-row { padding: 3px 6px; border-radius: 2px; }
+.trade-row:hover { background: var(--bg-elevated); }
+.trade-row.buy .t-price { color: var(--green); }
+.trade-row.sell .t-price { color: var(--red); }
+.t-time { color: var(--text-muted); }
+.t-amount { text-align: right; color: var(--text-secondary); }
+
+/* 币种信息 */
+.info { padding: 16px; overflow: auto; font-size: 13px; }
+.info-section { margin-bottom: 20px; }
+.info-section h4 { font-size: 14px; margin-bottom: 8px; color: var(--yellow); }
+.muted { color: var(--text-muted); font-size: 12px; }
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.ir-lbl { color: var(--text-muted); }
+.ir-val { color: var(--text); }
+.ir-val.mono { font-family: 'Consolas', monospace; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+}
+.info-desc {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  font-size: 12px;
+}
 
 .dropdown-enter-active, .dropdown-leave-active { transition: opacity 0.15s, transform 0.15s; }
 .dropdown-enter-from, .dropdown-leave-to { opacity: 0; transform: translateY(-4px); }
