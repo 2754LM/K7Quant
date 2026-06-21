@@ -25,12 +25,16 @@ def get_kline_data(symbol: str, timeframe: str, start: str, end: str) -> dict:
     """K线 + MA + 统计"""
     df = get_kline(symbol, timeframe, start, end)
     if df.empty:
-        return {"error": f"无 {symbol} 数据"}
+        return {"error": f"无 {symbol} 数据", "kline": [], "stats": {}}
     df = df_dates(df, start, end)
+    if df.empty:
+        return {"error": f"{symbol} 在 {start}~{end} 区间无数据 (缓存可能更早)", "kline": [], "stats": {}}
     df["ma7"] = df["close"].rolling(7).mean()
     df["ma25"] = df["close"].rolling(25).mean()
     df["ma99"] = df["close"].rolling(99).mean()
     df = df.dropna(subset=["close"]).reset_index(drop=True)
+    if df.empty:
+        return {"error": f"{symbol} 数据全为空", "kline": [], "stats": {}}
     return {
         "symbol": symbol, "timeframe": timeframe,
         "kline": to_records(df, ["date", "open", "high", "low", "close", "volume",
