@@ -87,5 +87,14 @@ export const updateTradingConfig = (data) => api.put('/config/trading', data)
 export const getTradeStatus = () => api.get('/trade/status')
 export const listTrades = (mode, limit) => api.get('/trade/trades', { params: { mode, limit } })
 export const recordTrade = (data) => api.post('/trade/record', data)
+// 模拟盘 (Binance Demo Mode)
+export const getTradeConnectivity = () => api.get('/trade/connectivity')
+export const getTradeAccount = () => api.get('/trade/account')
+export const getOpenOrders = (symbol) => api.get('/trade/open-orders', { params: { symbol } })
+export const placeOrder = (data) => api.post('/trade/order', data)
+export const cancelOrder = (symbol, orderId) =>
+  api.delete('/trade/order', { params: { symbol, order_id: orderId } })
+export const getMyTrades = (symbol, limit = 50) =>
+  api.get('/trade/my-trades', { params: { symbol, limit } })
 
 export default api
