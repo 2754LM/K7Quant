@@ -22,13 +22,24 @@ _BT_POOL_WORKERS = min(8, max(2, (os.cpu_count() or 4)))
 # ============ 因子查询 ============
 
 def get_kline_data(symbol: str, timeframe: str, start: str, end: str) -> dict:
-    """K线 + MA + 统计"""
+    """K线 + MA + 统计
+
+    如果用户请求区间超过缓存, 自动 clamp 到缓存范围 (并标记 clamped=True),
+    避免「无数据」误报。fetch 失败时直接用缓存。
+    """
     df = get_kline(symbol, timeframe, start, end)
     if df.empty:
-        return {"error": f"无 {symbol} 数据", "kline": [], "stats": {}}
-    df = df_dates(df, start, end)
-    if df.empty:
-        return {"error": f"{symbol} 在 {start}~{end} 区间无数据 (缓存可能更早)", "kline": [], "stats": {}}
+        return {"error": f"无 {symbol} 数据 (缓存和远端都没有)", "kline": [], "stats": {}}
+
+    # 检测是否需要 clamp: 请求区间超出 df 实际范围
+    actual_start = str(df["date"].iloc[0])[:10]
+    actual_end = str(df["date"].iloc[-1])[:10]
+    clamped = False
+    clamp_msg = ""
+    if actual_start > start or actual_end < end:
+        clamped = True
+        clamp_msg = f"缓存仅覆盖 {actual_start}~{actual_end}, 自动截取实际范围"
+
     df["ma7"] = df["close"].rolling(7).mean()
     df["ma25"] = df["close"].rolling(25).mean()
     df["ma99"] = df["close"].rolling(99).mean()
@@ -49,7 +60,10 @@ def get_kline_data(symbol: str, timeframe: str, start: str, end: str) -> dict:
             "max_price": float(df["high"].max()),
             "min_price": float(df["low"].min()),
             "avg_volume": float(df["volume"].mean()),
-        }
+        },
+        "clamped": clamped,
+        "clamp_msg": clamp_msg,
+        "requested_range": {"start": start, "end": end},
     }
 
 

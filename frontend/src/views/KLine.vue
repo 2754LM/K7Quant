@@ -21,17 +21,17 @@ const MA_COLORS = ['#9b59b6', '#3498db', '#e67e22', '#f1c40f', '#f0b90b', '#e74c
 // 每个 panel: { id, symbol, timeframe, startDate, endDate, indicators, data, loading, error, live, unsub, chart }
 // indicators: { ma:{enabled,periods}, ema:{...}, boll:{...}, macd:{...}, rsi:{...}, kdj:{...}, volume:bool }
 
-const panelCount = ref(1)  // 1 / 2 / 3 / 4
-const panels = ref([])      // 数组, 每个 panel 独立
+const panels = ref([])      // 数组, 每个 panel 独立, 自由拖动排序
 
-function makePanel(idx) {
+function makePanel(idx, template = null) {
+  const t = template || {}
   return {
-    id: `panel-${Date.now()}-${idx}`,
-    symbol: 'BTCUSDT',
-    timeframe: '4h',
+    id: `panel-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+    symbol: t.symbol || 'BTCUSDT',
+    timeframe: t.timeframe || '4h',
     startDate: '',
     endDate: '',
-    indicators: {
+    indicators: t.indicators ? JSON.parse(JSON.stringify(t.indicators)) : {
       ma:   { enabled: true,  periods: [5, 10, 20, 30, 60] },
       ema:  { enabled: false, periods: [12, 26] },
       boll: { enabled: false, period: 20, std: 2 },
@@ -43,37 +43,52 @@ function makePanel(idx) {
     data: null,
     loading: false,
     error: '',
-    live: false,        // WebSocket 实时模式
+    live: false,
     wsUnsub: null,
     lastTick: null,
     chart: null,
   }
 }
 
-// 初始化 panels
-function rebuildPanels(n) {
-  panelCount.value = n
-  panels.value = []
-  for (let i = 0; i < n; i++) panels.value.push(makePanel(i))
+// 初始化
+panels.value = [makePanel(0)]
+nextTick(() => {
+  applySmartDefault(panels.value[0])
+  loadPanel(panels.value[0])
+})
+
+// 添加新面板: 复制最后一个的设置
+function addPanel() {
+  const last = panels.value[panels.value.length - 1]
+  const np = makePanel(panels.value.length, {
+    symbol: last?.symbol,
+    timeframe: last?.timeframe,
+    indicators: last?.indicators,
+  })
+  panels.value.push(np)
+  registerPanelWatchers(np)
   nextTick(() => {
-    for (const p of panels.value) {
-      applySmartDefault(p)
-      loadPanel(p)
-    }
+    applySmartDefault(np)
+    loadPanel(np)
   })
 }
 
-rebuildPanels(1)
-
-// 调整 panel 数
-function setPanelCount(n) {
-  if (n === panels.value.length) return
-  // 关掉旧 ws
-  for (const p of panels.value) {
-    if (p.wsUnsub) p.wsUnsub()
-    if (p.chart) { try { p.chart.dispose() } catch {} }
-  }
-  rebuildPanels(n)
+// 复制面板 (设置相同)
+function duplicatePanel(id) {
+  const src = panels.value.find(x => x.id === id)
+  if (!src) return
+  const np = makePanel(panels.value.length, {
+    symbol: src.symbol,
+    timeframe: src.timeframe,
+    indicators: src.indicators,
+  })
+  const idx = panels.value.findIndex(x => x.id === id)
+  panels.value.splice(idx + 1, 0, np)
+  registerPanelWatchers(np)
+  nextTick(() => {
+    applySmartDefault(np)
+    loadPanel(np)
+  })
 }
 
 function closePanel(id) {
@@ -82,6 +97,39 @@ function closePanel(id) {
   if (p?.wsUnsub) p.wsUnsub()
   if (p?.chart) { try { p.chart.dispose() } catch {} }
   panels.value = panels.value.filter(x => x.id !== id)
+}
+
+// 拖拽排序
+const dragOverPanelId = ref(null)
+function onDragStart(e, panel) {
+  e.dataTransfer.effectAllowed = 'move'
+  e.dataTransfer.setData('text/plain', panel.id)
+  e.currentTarget.classList.add('dragging')
+}
+function onDragEnd(e) {
+  e.currentTarget.classList.remove('dragging')
+  dragOverPanelId.value = null
+}
+function onDragOver(e, panel) {
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'move'
+  dragOverPanelId.value = panel.id
+}
+function onDrop(e, target) {
+  e.preventDefault()
+  const draggedId = e.dataTransfer.getData('text/plain')
+  dragOverPanelId.value = null
+  if (!draggedId || draggedId === target.id) return
+  const fromIdx = panels.value.findIndex(p => p.id === draggedId)
+  const toIdx = panels.value.findIndex(p => p.id === target.id)
+  if (fromIdx < 0 || toIdx < 0) return
+  // 关掉两个 panel 的 ws (重排后 chart DOM 会变, 需要 dispose)
+  const dragged = panels.value[fromIdx]
+  if (dragged.wsUnsub) { dragged.wsUnsub(); dragged.wsUnsub = null }
+  if (dragged.chart) { try { dragged.chart.dispose() } catch {} ; dragged.chart = null }
+  const [moved] = panels.value.splice(fromIdx, 1)
+  panels.value.splice(toIdx, 0, moved)
+  nextTick(() => loadPanel(moved))
 }
 
 // ============ 智能默认日期 ============
@@ -102,11 +150,21 @@ function applySmartDefaultAll() {
   }
 }
 
+// 点 tf 按钮: 如果换周期, 自动调日期范围并重载
+function onTimeframeClick(p, tf) {
+  if (p.timeframe === tf) return
+  p.timeframe = tf
+  applySmartDefault(p)
+  loadPanel(p)
+}
+
 // ============ 加载 K 线 ============
 async function loadPanel(p) {
   if (!p.startDate || !p.endDate) return
   p.loading = true
   p.error = ''
+  p.clamped = false
+  p.clampMsg = ''
   try {
     const res = await getKline(p.symbol, p.timeframe, p.startDate, p.endDate)
     if (res.data.error) {
@@ -114,6 +172,10 @@ async function loadPanel(p) {
       p.data = null
     } else {
       p.data = res.data
+      if (res.data.clamped) {
+        p.clamped = true
+        p.clampMsg = res.data.clamp_msg || ''
+      }
       await nextTick()
       drawPanel(p)
     }
@@ -124,22 +186,12 @@ async function loadPanel(p) {
   }
 }
 
-// 时间框架变更时自动调日期范围 + 重载
-watch(() => panels.value.map(p => p.timeframe), (newTfs, oldTfs) => {
-  for (let i = 0; i < panels.value.length; i++) {
-    const p = panels.value[i]
-    if (newTfs[i] !== oldTfs?.[i]) {
-      applySmartDefault(p)
-      loadPanel(p)
-    }
-  }
-})
-
-// 数据 / 指标变化时重绘
-for (const p of panels.value) {
+// 数据 / 指标变化时重绘 (注册到每个 panel)
+function registerPanelWatchers(p) {
   watch(() => [p.symbol, p.startDate, p.endDate], () => loadPanel(p))
   watch(() => p.indicators, () => drawPanel(p), { deep: true })
 }
+for (const p of panels.value) registerPanelWatchers(p)
 
 // ============ 实时模式 ============
 function toggleLive(p) {
@@ -543,27 +595,36 @@ function setDatePreset(p, preset) {
 
 <template>
   <div class="kline-multipanel">
-    <!-- 顶部: 布局选择 -->
+    <!-- 顶部: 添加面板 + 总览 -->
     <div class="topbar">
-      <div class="layout-group">
-        <span class="layout-label">布局:</span>
-        <button v-for="n in 4" :key="n" :class="{ active: panelCount === n }"
-          @click="setPanelCount(n)" :title="`${n} 个图表`">
-          <span v-if="n === 1">▢</span>
-          <span v-else-if="n === 2">▢▢</span>
-          <span v-else-if="n === 3">▢▢▢</span>
-          <span v-else>▢▢▢▢</span>
-          <span class="num">{{ n }}</span>
-        </button>
+      <div class="topbar-left">
+        <span class="hint">拖动卡片顶部 ⋮⋮ 排序, 点 📋 复制当前设置, 点 × 关闭</span>
       </div>
-      <div class="topbar-actions">
-        <span class="hint">每个面板独立配置币种 / 周期 / 指标</span>
+      <div class="topbar-right">
+        <button class="add-panel-btn" @click="addPanel" title="新增一个面板 (复制最后一个的设置)">
+          ➕ 添加面板
+        </button>
       </div>
     </div>
 
-    <!-- 多图网格 -->
-    <div class="panels-grid" :class="`grid-${panelCount}`">
-      <div v-for="(p, idx) in panels" :key="p.id" class="panel-card">
+    <!-- 自由堆叠的卡片列表 -->
+    <div class="panels-stack">
+      <div v-for="(p, idx) in panels" :key="p.id" class="panel-card"
+        :class="{ 'drag-over': dragOverPanelId === p.id, 'single': panels.length === 1 }"
+        draggable="true"
+        @dragstart="onDragStart($event, p)"
+        @dragend="onDragEnd($event)"
+        @dragover="onDragOver($event, p)"
+        @drop="onDrop($event, p)">
+        <!-- 拖动手柄 + 标题栏 -->
+        <div class="panel-head">
+          <span class="drag-handle" title="拖动排序">⋮⋮</span>
+          <span class="panel-idx">#{{ idx + 1 }}</span>
+          <span class="panel-actions-mini">
+            <button class="mini-icon-btn" @click="duplicatePanel(p.id)" title="复制当前设置新增面板">📋</button>
+            <button v-if="panels.length > 1" class="mini-icon-btn close" @click="closePanel(p.id)" title="关闭面板">×</button>
+          </span>
+        </div>
         <!-- Panel 工具栏 -->
         <div class="panel-toolbar">
           <div class="pt-row1">
@@ -573,7 +634,7 @@ function setDatePreset(p, preset) {
             <div class="tf-mini">
               <button v-for="tf in timeframes" :key="tf"
                 :class="{ active: tf === p.timeframe }"
-                @click="p.timeframe = tf">{{ tf }}</button>
+                @click="onTimeframeClick(p, tf)">{{ tf }}</button>
             </div>
             <button class="live-btn" :class="{ on: p.live }" @click="toggleLive(p)" :title="p.live ? '关闭实时 (WebSocket)' : '开启实时 (WebSocket 订阅 Binance)'">
               <span class="dot" :class="{ pulse: p.live }"></span>
@@ -696,6 +757,10 @@ function setDatePreset(p, preset) {
           <div v-else-if="p.error" class="error-state">⚠ {{ p.error }}</div>
           <div v-show="p.data?.kline?.length" :id="`chart-${p.id}`" class="chart"></div>
         </div>
+        <!-- clamp 提示 -->
+        <div v-if="p.clamped" class="clamp-banner" :title="p.clampMsg">
+          ⚠ {{ p.clampMsg || '已截取到缓存实际范围' }}
+        </div>
       </div>
     </div>
   </div>
@@ -710,33 +775,63 @@ function setDatePreset(p, preset) {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: 8px; padding: 8px 14px;
 }
-.layout-group { display: flex; gap: 4px; align-items: center; }
-.layout-label { font-size: 12px; color: var(--text-muted); margin-right: 6px; }
-.layout-group button {
-  background: var(--bg); border: 1px solid var(--border); color: var(--text-secondary);
-  padding: 4px 10px; border-radius: 4px; font-size: 11px;
-  display: flex; align-items: center; gap: 4px; cursor: pointer;
+.topbar-left .hint { font-size: 11px; color: var(--text-muted); }
+.add-panel-btn {
+  background: var(--bg); border: 1px solid var(--yellow); color: var(--yellow);
+  padding: 6px 14px; border-radius: 6px; font-size: 12px;
+  cursor: pointer; font-weight: 600;
 }
-.layout-group button:hover { border-color: var(--yellow); }
-.layout-group button.active { background: var(--yellow); color: #000; border-color: var(--yellow); font-weight: 600; }
-.layout-group .num { font-weight: 700; }
-.topbar-actions .hint { font-size: 11px; color: var(--text-muted); }
+.add-panel-btn:hover { background: var(--yellow); color: #000; }
 
-/* 网格 */
-.panels-grid { display: grid; gap: 12px; flex: 1; min-height: 0; }
-.grid-1 { grid-template-columns: 1fr; }
-.grid-2 { grid-template-columns: 1fr 1fr; }
-.grid-3 { grid-template-columns: 1fr 1fr 1fr; }
-.grid-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+/* 自由堆叠的卡片 */
+.panels-stack { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; overflow-y: auto; padding: 2px; }
 
 /* Panel */
 .panel-card {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: 10px; padding: 10px;
   display: flex; flex-direction: column; gap: 6px; min-height: 0;
-  min-width: 0;
+  min-width: 0; position: relative;
+  transition: border-color 0.15s, transform 0.15s;
 }
 .panel-card:hover { border-color: rgba(240,185,11,0.3); }
+.panel-card.dragging { opacity: 0.4; transform: scale(0.98); }
+.panel-card.drag-over { border-top: 3px solid var(--yellow); }
+.panel-card.single { min-height: 500px; }
+
+/* Panel 头部: 拖动手柄 + 序号 + 操作 */
+.panel-head {
+  display: flex; align-items: center; gap: 8px;
+  padding-bottom: 4px; border-bottom: 1px dashed var(--border);
+}
+.drag-handle {
+  cursor: grab; color: var(--text-muted);
+  font-size: 14px; user-select: none;
+  letter-spacing: -2px; padding: 2px 4px;
+}
+.drag-handle:hover { color: var(--yellow); }
+.drag-handle:active { cursor: grabbing; }
+.panel-idx {
+  font-size: 11px; color: var(--text-muted);
+  font-family: 'Consolas', monospace;
+}
+.panel-actions-mini { margin-left: auto; display: flex; gap: 4px; }
+.mini-icon-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+  width: 22px; height: 22px; border-radius: 4px;
+  font-size: 12px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.mini-icon-btn:hover { border-color: var(--yellow); color: var(--yellow); }
+.mini-icon-btn.close:hover { border-color: var(--red); color: var(--red); }
+
+/* clamp 提示 */
+.clamp-banner {
+  background: rgba(240,185,11,0.08);
+  border: 1px solid rgba(240,185,11,0.3);
+  border-radius: 4px; padding: 6px 10px;
+  font-size: 11px; color: var(--yellow);
+}
 
 /* 工具栏 */
 .panel-toolbar { display: flex; flex-direction: column; gap: 4px; }

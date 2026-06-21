@@ -16,7 +16,11 @@ _FETCH_WORKERS = min(8, max(2, (os.cpu_count() or 4)))
 def get_kline(symbol: str, timeframe: str = None,
               start: str = None, end: str = None,
               use_cache: bool = True) -> pd.DataFrame:
-    """取 K 线, 缓存优先; 缓存不够时再补下载"""
+    """取 K 线, 缓存优先; 缓存不够时再补下载
+
+    返回 df 已经按 [start..end] 过滤; 如果 fetch 失败回退到缓存,
+    df 为缓存全集 (未经过滤), 由调用方按实际范围调整。
+    """
     tf = timeframe or sys_config.get("backtest.default_timeframe", "4h")
     start = start or sys_config.get("backtest.start_date", "20240101")
     end = end or _resolve_end_date()
@@ -25,21 +29,21 @@ def get_kline(symbol: str, timeframe: str = None,
     fetcher = get_fetcher()
 
     cached_df = None
+    cached_min = cached_max = None
     if use_cache:
         df = cache.read(symbol, tf)
         if df is not None and len(df) > 10:
             cached_df = df
+            try:
+                cached_min = str(df["date"].min())[:10]
+                cached_max = str(df["date"].max())[:10]
+            except Exception:
+                pass
             filtered = _filter(df, start, end)
             if not filtered.empty:
                 log.debug(f"[cache HIT] {symbol} {tf} ({len(filtered)} rows from {len(df)} cached)")
                 return filtered
-            # 缓存有数据但过滤为空 -> 看下请求区间是否完全在缓存外
-            try:
-                cache_min = str(df["date"].min())
-                cache_max = str(df["date"].max())
-            except Exception:
-                cache_min = cache_max = ""
-            log.info(f"[cache STALE] {symbol} {tf}: cache [{cache_min}..{cache_max}] 不覆盖请求 [{start}..{end}]")
+            log.info(f"[cache STALE] {symbol} {tf}: cache [{cached_min}..{cached_max}] 不覆盖请求 [{start}..{end}]")
 
     try:
         log.info(f"[fetch] {symbol} {tf} range={start}..{end}")
@@ -53,9 +57,9 @@ def get_kline(symbol: str, timeframe: str = None,
         return _filter(df, start, end)
     except Exception as e:
         log.error(f"[fetch FAIL] {symbol} {tf}: {e}")
-        # 网络挂时不静默失败: 退回到已缓存的数据 (即使区间不完全覆盖), 仍比无数据好
+        # 网络挂时不静默失败: 退回到已缓存的数据全集, 让上层按真实范围调整
         if cached_df is not None and not cached_df.empty:
-            log.warning(f"[fetch FAIL→fallback cache] {symbol} {tf}: 返回缓存 {len(cached_df)} 行 (区间可能不完整)")
+            log.warning(f"[fetch FAIL→fallback cache] {symbol} {tf}: 返回缓存 {len(cached_df)} 行 (请求区间 {start}..{end}, 缓存 {cached_min}..{cached_max})")
             return cached_df
         return pd.DataFrame()
 
