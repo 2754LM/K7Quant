@@ -112,7 +112,7 @@ function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed
         </div>
         <div class="form-row" style="grid-column: span 3">
           <label>日期区间</label>
-          <DateRangePicker v-model:start="params.start_date" v-model:end="params.end_date" default-range="3m" />
+          <DateRangePicker v-model:start="params.start_date" v-model:end="params.end_date" default-range="1m" />
         </div>
       </div>
       <button class="btn-primary" @click="run" :disabled="loading">

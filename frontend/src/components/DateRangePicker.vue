@@ -5,7 +5,8 @@ import { NDatePicker } from 'naive-ui'
 const props = defineProps({
   start: String,        // YYYYMMDD
   end: String,
-  defaultRange: { type: String, default: '3m' },
+  defaultRange: { type: String, default: '1m' },
+  timeframe: { type: String, default: null },  // 智能默认: 根据 tf 自动选
   size: { type: String, default: 'small' },
 })
 const emit = defineEmits(['update:start', 'update:end', 'change'])
@@ -41,6 +42,17 @@ const RANGES = [
   { id: 'all', label: '全部', days: null },
 ]
 
+// 根据 timeframe 选默认区间 (避免一次拉太多数据, 拖慢首屏)
+function smartRangeFor(tf) {
+  if (!tf) return '1m'
+  if (['1m', '3m', '5m'].includes(tf)) return '1w'   // 分钟级 1 周够看
+  if (['15m', '30m'].includes(tf)) return '1m'        // 15m/30m 1 个月
+  if (['1h', '2h', '4h', '6h', '12h'].includes(tf)) return '3m'  // 小时级 3 个月
+  if (['1d', '3d'].includes(tf)) return '6m'          // 日级 6 个月
+  if (tf === '1w') return '2y'                        // 周级 2 年
+  return '3m'
+}
+
 const activeRange = ref(props.defaultRange)
 
 function setRange(r) {
@@ -62,8 +74,18 @@ function setRange(r) {
 
 onMounted(() => {
   if (!props.start || !props.end) {
-    setRange(RANGES.find(r => r.id === props.defaultRange) || RANGES[2])
+    // 优先用 timeframe 智能选择, 然后才是 defaultRange
+    const tfDefault = smartRangeFor(props.timeframe)
+    const rangeId = props.timeframe ? tfDefault : (props.defaultRange || '1m')
+    setRange(RANGES.find(r => r.id === rangeId) || RANGES[1])
   }
+})
+
+// 当 timeframe 变化时, 主动重置 (但只在没手动选过其他预设时)
+watch(() => props.timeframe, (tf) => {
+  if (!tf) return
+  // 不主动改, 让用户自己选; 但可以提示
+  // 暂时不重置, 避免误操作
 })
 
 watch([tsStart, tsEnd], ([s, e]) => {

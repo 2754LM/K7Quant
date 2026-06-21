@@ -10,14 +10,23 @@ import StateView from '../components/StateView.vue'
 import HelpTip from '../components/HelpTip.vue'
 import DateRangePicker from '../components/DateRangePicker.vue'
 import TimeframePicker from '../components/TimeframePicker.vue'
+import { describePeriod } from '../utils/timeframe'
+
+// 因子参数里的「周期」字段 (显示实际时长)
+const PERIOD_KEYS = new Set(['period', 'fast', 'slow', 'signal', 'n', 'm1', 'm2', 'multiplier'])
+function isPeriodKey(key) { return PERIOD_KEYS.has(key) }
+function describeFactorParam(key, val) {
+  if (!val || isNaN(Number(val))) return `${val || '?'} 根`
+  return describePeriod(val, timeframe.value)
+}
 
 const factorList = ref({ categories: [], factors: [] })
 const selectedFactor = ref(null)
 const params = ref({ period: 20 })
 const symbol = ref('BTCUSDT')
-const timeframe = ref('4h')
-const start = ref('20240101')
-const end = ref('20250601')
+const timeframe = ref('1d')
+const start = ref('')
+const end = ref('')
 
 const singleResult = ref(null)
 const loading = ref(false)
@@ -496,12 +505,17 @@ loadStrategies()
         </div>
         <div class="form-group" style="grid-column: span 2; min-width: 360px">
           <label>日期区间</label>
-          <DateRangePicker v-model:start="start" v-model:end="end" default-range="3m" />
+          <DateRangePicker v-model:start="start" v-model:end="end" :timeframe="timeframe" default-range="1m" />
         </div>
         <div v-for="(schema, key) in (selectedFactor?.params_schema || {})" :key="key" class="form-group">
-          <label>{{ schema.label || key }}<span v-if="schema.unit" class="unit-hint">({{ schema.unit }})</span></label>
+          <label>
+            {{ schema.label || key }}
+            <span v-if="schema.unit && isPeriodKey(key)" class="unit-hint">(~{{ describeFactorParam(key, params[key]) }})</span>
+            <span v-else-if="schema.unit" class="unit-hint">({{ schema.unit }})</span>
+          </label>
           <input type="number" v-model.number="params[key]"
-            :min="schema.min" :max="schema.max" :step="schema.step || 1" />
+            :min="schema.min" :max="schema.max" :step="schema.step || 1"
+            :title="schema.hint ? `${schema.hint}\n实际时长: ${describeFactorParam(key, params[key])}` : ''" />
           <span v-if="schema.hint" class="param-hint">{{ schema.hint }}</span>
         </div>
         <button class="btn-primary" @click="compute" :disabled="loading">
@@ -610,7 +624,7 @@ loadStrategies()
         </div>
         <div class="form-group" style="grid-column: span 2; min-width: 360px">
           <label>日期区间</label>
-          <DateRangePicker v-model:start="start" v-model:end="end" default-range="3m" />
+          <DateRangePicker v-model:start="start" v-model:end="end" :timeframe="timeframe" default-range="1m" />
         </div>
         <button class="btn-primary" @click="computeAllFactors" :disabled="allFactorsLoading">
           {{ allFactorsLoading ? '计算中...' : '▶ 计算全部' }}

@@ -1,19 +1,22 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, provide } from 'vue'
+import { ref, computed, onMounted, onUnmounted, provide, defineAsyncComponent } from 'vue'
 import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme } from 'naive-ui'
 import { getConfig, listSymbols, getStrategies } from './api'
-import Dashboard from './views/Dashboard.vue'
-import KLine from './views/KLine.vue'
-import Filter from './views/Filter.vue'
-import Strategy from './views/Strategy.vue'
-import Factor from './views/Factor.vue'
-import Symbols from './views/Symbols.vue'
-import DataPanel from './views/DataPanel.vue'
-import Settings from './views/Settings.vue'
-import Trade from './views/Trade.vue'
-import Learn from './views/Learn.vue'
-import LogViewer from './views/LogViewer.vue'
 import SystemLogPanel from './components/SystemLogPanel.vue'
+
+// 视图懒加载: 各 Tab 按需加载, 减小初始 bundle
+// 注: defineAsyncComponent 必须在 setup 顶部, 否则 Vite 不会做 chunk 拆分
+const Dashboard = defineAsyncComponent(() => import('./views/Dashboard.vue'))
+const KLine = defineAsyncComponent(() => import('./views/KLine.vue'))
+const Filter = defineAsyncComponent(() => import('./views/Filter.vue'))
+const Strategy = defineAsyncComponent(() => import('./views/Strategy.vue'))
+const Factor = defineAsyncComponent(() => import('./views/Factor.vue'))
+const Symbols = defineAsyncComponent(() => import('./views/Symbols.vue'))
+const DataPanel = defineAsyncComponent(() => import('./views/DataPanel.vue'))
+const Settings = defineAsyncComponent(() => import('./views/Settings.vue'))
+const Trade = defineAsyncComponent(() => import('./views/Trade.vue'))
+const Learn = defineAsyncComponent(() => import('./views/Learn.vue'))
+const LogViewer = defineAsyncComponent(() => import('./views/LogViewer.vue'))
 
 const themeOverrides = {
   common: {

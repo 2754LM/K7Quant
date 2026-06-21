@@ -9,6 +9,7 @@ import TimeframePicker from '../components/TimeframePicker.vue'
 import DateRangePicker from '../components/DateRangePicker.vue'
 import StateView from '../components/StateView.vue'
 import HelpTip from '../components/HelpTip.vue'
+import { describePeriod, tfLabel } from '../utils/timeframe'
 
 const cfg = inject('cfg')
 const reloadCfg = inject('reload')
@@ -28,7 +29,7 @@ const params = ref({
   top_n: 3, hold: 12, lookback: 24,
   rsi_period: 14, rsi_oversold: 30, rsi_overbought: 70,
   macd_fast: 12, macd_slow: 26, macd_signal: 9,
-  start_date: '20240101', end_date: '20250601',
+  start_date: '', end_date: '',  // 初始化为空, 由 DateRangePicker 按 timeframe 智能选择默认区间
 })
 
 // 初始化: 从配置里读默认值 (设置页保存的 backtest.start_date/end_date/timeframe)
@@ -43,6 +44,8 @@ function applyDefaultFromSettings() {
   if (settingsApplied.value) return  // 只在初始化时套用一次, 避免覆盖用户的修改
   if (!cfg.value?.settings?.backtest) return
   const bt = cfg.value.settings.backtest
+  // 只有用户明确设置过 settings.backtest.start_date 才覆盖
+  // 否则保持空, 由 DateRangePicker 按 timeframe 智能选默认
   if (bt.start_date) params.value.start_date = bt.start_date
   if (bt.end_date === 'auto' || !bt.end_date) {
     params.value.end_date = todayStr()
@@ -53,6 +56,17 @@ function applyDefaultFromSettings() {
   settingsApplied.value = true
 }
 watch(() => cfg.value?.settings?.backtest, applyDefaultFromSettings, { immediate: true, deep: true })
+
+// 参数说明: 跟「周期」相关的字段, 显示实际时长 (如 MA7 + 4h => ~28小时)
+const PERIOD_KEYS = new Set(['ma_short', 'ma_long', 'rsi_period', 'macd_fast', 'macd_slow', 'macd_signal',
+  'lookback', 'break_period', 'period', 'adx_threshold', 'oversold', 'overbought', 'top_n', 'hold', 'lookback_n'])
+function isPeriodKey(key) { return PERIOD_KEYS.has(key) }
+function describeParam(key, val) {
+  if (!val || isNaN(Number(val))) return `${val || '?'} 根`
+  // oversold/overbought 是阈值不是周期, 不算时间
+  if (key === 'oversold' || key === 'overbought' || key === 'adx_threshold') return `${val} ${activeStrategy.value?.params_schema?.[key]?.unit || ''}`
+  return describePeriod(val, params.value.timeframe)
+}
 
 // ---------- 币池选择 ----------
 const poolMode = ref('all')  // 'all' | 'custom'
@@ -316,12 +330,12 @@ watch([yAxisMode, yAxisMin, yAxisMax, xAxisStart, xAxisEnd], () => {
 })
 
 // ---------- 自定义代码面板 ----------
-const codeForm = ref({
+const   codeForm = ref({
   code: 'signal = CROSS_UP(MA(close, 7), MA(close, 25))\n止损 = 0.05\n止盈 = 0.10\n仓位 = 1.0',
   symbol: 'BTCUSDT',
   timeframe: '4h',
-  start_date: '20240101',
-  end_date: '20250601',
+  start_date: '',
+  end_date: '',
   params: {},
 })
 const codeResult = ref(null)
@@ -711,17 +725,18 @@ function drawMultiChart() {
         <div v-for="(schema, key) in (activeStrategy?.params_schema || {})" :key="key" class="cfg">
           <label>
             {{ schema.label || key }}
-            <span v-if="schema.unit" class="unit-hint">({{ schema.unit }})</span>
+            <span v-if="schema.unit && isPeriodKey(key)" class="unit-hint">(~{{ describeParam(key, params[key]) }})</span>
+            <span v-else-if="schema.unit" class="unit-hint">({{ schema.unit }})</span>
           </label>
           <input type="number" v-model.number="params[key]"
             :min="schema.min"
             :max="schema.max"
             @change="run"
-            :title="schema.hint || ''" />
+            :title="schema.hint ? `${schema.hint}\n实际时长: ${describeParam(key, params[key])}` : `实际时长: ${describeParam(key, params[key])}`" />
         </div>
         <div class="cfg date-cfg">
           <label>区间</label>
-          <DateRangePicker v-model:start="params.start_date" v-model:end="params.end_date" default-range="3m" />
+          <DateRangePicker v-model:start="params.start_date" v-model:end="params.end_date" :timeframe="params.timeframe" default-range="1m" />
         </div>
         <!-- 币池选择 -->
         <div class="cfg pool-cfg">
@@ -838,7 +853,7 @@ function drawMultiChart() {
               </div>
               <div class="form-group">
                 <label>区间</label>
-                <DateRangePicker v-model:start="codeForm.start_date" v-model:end="codeForm.end_date" default-range="3m" />
+                <DateRangePicker v-model:start="codeForm.start_date" v-model:end="codeForm.end_date" :timeframe="codeForm.timeframe" default-range="1m" />
               </div>
               <button class="btn-primary" :disabled="codeLoading || !codeValidation?.ok" @click="runCode" :title="!codeValidation?.ok ? '请先修正代码语法' : ''">
                 {{ codeLoading ? '运行中...' : '▶ 运行回测' }}
