@@ -113,41 +113,6 @@ def get_templates() -> dict:
 
 
 def get_dsl_docs() -> dict:
-    """DSL 语法文档"""
-    return {
-        "syntax": """
-策略代码格式 (类 Python 表达式):
-
-# 注释以 # 开头
-signal = <表达式>          # 必需, 返回 0/1 (或 -1/0/1 支持做空)
-止损 = 0.05                # 可选, 5% 止损
-止盈 = 0.15                # 可选, 15% 止盈
-仓位 = 1.0                 # 可选, 满仓 (0-1)
-
-支持函数 (来自因子库):
-  MA(close, N) / EMA(close, N) / RSI(close, N)
-  MACD(close, fast, slow, signal)
-  BOLL(close, N, std) / KDJ(close, N, m1, m2)
-  momentum(close, N) / volatility(close, N)
-  high_break(close, N) / low_break(close, N)
-  ...
-
-支持比较: > < >= <= == !=
-支持逻辑: AND OR NOT
-支持交叉: CROSS_UP(a, b)  CROSS_DOWN(a, b)
-""",
-        "examples": [
-            {
-                "name": "双均线",
-                "code": "signal = CROSS_UP(MA(close, 7), MA(close, 25)) - CROSS_DOWN(MA(close, 7), MA(close, 25))"
-            },
-            {
-                "name": "RSI 阈值",
-                "code": "signal = RSI(close, 14) < 30"
-            },
-            {
-                "name": "多条件",
-                "code": "signal = (RSI(close, 14) < 30) AND (volume > volume_ma(volume, 20))"
-            },
-        ]
-    }
+    """DSL 语法文档 (委托到 strategy 引擎统一维护)"""
+    from backend.strategy import get_dsl_docs as _engine_docs
+    return _engine_docs()

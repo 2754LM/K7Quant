@@ -6,8 +6,8 @@ server:
 data_source:
   exchange: binance
   api_base: https://api.binance.com
-  timeout: 20
-  retries: 3
+  timeout: 5
+  retries: 1
   proxy:
     enabled: false
     http: ''

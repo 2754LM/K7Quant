@@ -19,8 +19,9 @@ class BinanceFetcher:
                  retries: int = None, proxies: dict = None):
         cfg = sys_config.get("data_source", {})
         self.base_url = base_url or cfg.get("api_base", self.BASE_URL)
-        self.timeout = timeout or int(cfg.get("timeout", 20))
-        self.retries = retries or int(cfg.get("retries", 3))
+        # 默认 5s: 网络不佳时少等, 让上层尽快 fallback
+        self.timeout = timeout or int(cfg.get("timeout", 5))
+        self.retries = retries or int(cfg.get("retries", 2))
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "K7Quant/4.0"})
         if proxies:
@@ -55,7 +56,7 @@ class BinanceFetcher:
             except Exception as e:
                 last_err = e
                 if attempt < self.retries - 1:
-                    time.sleep(1 + attempt * 2)
+                    time.sleep(0.5 + attempt * 0.5)
         raise RuntimeError(f"Binance {path}: {last_err}")
 
     def klines(self, symbol: str, interval: str,

@@ -20,7 +20,22 @@ const loading = ref(false)
 const error = ref('')
 const msg = ref('')
 const validation = ref(null)
-const dslDocs = ref({ syntax: '', examples: [] })
+const dslDocs = ref({ overview: '', structure: [], columns: [], operators: [], functions: [], examples: [], tips: [] })
+const dslTabs = [
+  { key: 'overview', label: '总览' },
+  { key: 'columns', label: '数据列' },
+  { key: 'operators', label: '操作符' },
+  { key: 'functions', label: '函数库' },
+  { key: 'examples', label: '示例' },
+  { key: 'tips', label: '技巧' },
+]
+const dslTab = ref('overview')
+const funcCatFilter = ref('全部')
+const functionCategories = computed(() => {
+  const cats = ['全部']
+  if (dslDocs.value?.functions) cats.push(...dslDocs.value.functions.map(c => c.cat))
+  return cats
+})
 let validationTimer = null
 
 const selectedStrategy = computed(() => strategies.value.find(s => s.id === selectedId.value))
@@ -129,6 +144,26 @@ async function del() {
   }
 }
 
+function copyExample(code) {
+  navigator.clipboard?.writeText(code).then(
+    () => { msg.value = '✓ 已复制到剪贴板' },
+    () => { msg.value = '✗ 复制失败' }
+  )
+}
+function applyExample(ex) {
+  selectedId.value = null
+  isNew.value = true
+  editForm.value = {
+    name: ex.name,
+    description: `${ex.name} 示例策略`,
+    category: 'custom',
+    code: ex.code,
+    params_schema: {},
+  }
+  validate()
+  msg.value = `✓ 已加载「${ex.name}」模板`
+}
+
 onMounted(async () => {
   await load()
   // 原来用原生 fetch().data (拿不到数据), 改用已封装的 axios getDslDocs()
@@ -218,13 +253,95 @@ onMounted(async () => {
         </div>
       </div>
 
-      <div class="card">
-        <h3>DSL 语法速查</h3>
-        <pre class="docs">{{ dslDocs.syntax }}</pre>
-        <h4>示例</h4>
-        <div v-for="ex in dslDocs.examples" :key="ex.name" class="example">
-          <div class="ex-name">{{ ex.name }}</div>
-          <pre class="ex-code">{{ ex.code }}</pre>
+      <div class="card dsl-docs-card">
+        <div class="docs-header">
+          <h3>📖 DSL 语法手册</h3>
+          <div class="docs-tabs">
+            <button v-for="tab in dslTabs" :key="tab.key"
+              :class="{ active: dslTab === tab.key }"
+              @click="dslTab = tab.key">{{ tab.label }}</button>
+          </div>
+        </div>
+
+        <!-- 总览 -->
+        <div v-if="dslTab === 'overview'" class="docs-pane">
+          <p class="overview">{{ dslDocs.overview }}</p>
+          <h4>结构</h4>
+          <div class="kv-table">
+            <div v-for="item in dslDocs.structure" :key="item.syntax" class="kv-row">
+              <code class="kv-syntax" :class="{ required: item.required }">{{ item.syntax }}</code>
+              <span class="kv-desc">{{ item.desc }}<span v-if="item.required" class="req-mark">* 必需</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 数据列 -->
+        <div v-if="dslTab === 'columns'" class="docs-pane">
+          <p class="hint">表达式里直接写这些名字, 表示对应的 K 线数据列。</p>
+          <table class="docs-table">
+            <thead><tr><th>列名</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr v-for="c in dslDocs.columns" :key="c.name">
+                <td><code>{{ c.name }}</code></td>
+                <td>{{ c.desc }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 操作符 -->
+        <div v-if="dslTab === 'operators'" class="docs-pane">
+          <table class="docs-table">
+            <thead><tr><th style="width: 30%">写法</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr v-for="op in dslDocs.operators" :key="op.op">
+                <td><code>{{ op.op }}</code></td>
+                <td>{{ op.desc }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 函数库 (按分类) -->
+        <div v-if="dslTab === 'functions'" class="docs-pane">
+          <div class="func-cat-filter">
+            <button v-for="cat in functionCategories" :key="cat"
+              :class="{ active: funcCatFilter === cat }"
+              @click="funcCatFilter = cat">{{ cat }}</button>
+          </div>
+          <div v-for="cat in (funcCatFilter === '全部' ? dslDocs.functions : dslDocs.functions.filter(c => c.cat === funcCatFilter))"
+               :key="cat.cat" class="func-cat">
+            <h4 class="func-cat-title">{{ cat.cat }}</h4>
+            <table class="docs-table">
+              <thead><tr><th style="width: 30%">函数</th><th>签名</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr v-for="f in cat.items" :key="f.id">
+                  <td><strong class="fn-id">{{ f.id }}</strong></td>
+                  <td><code class="fn-sig">{{ f.sig }}</code></td>
+                  <td>{{ f.desc }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 示例 -->
+        <div v-if="dslTab === 'examples'" class="docs-pane">
+          <div v-for="ex in dslDocs.examples" :key="ex.name" class="example">
+            <div class="ex-head">
+              <strong>{{ ex.name }}</strong>
+              <button class="ex-copy" @click="copyExample(ex.code)">复制</button>
+              <button class="ex-apply" @click="applyExample(ex)">套用此模板</button>
+            </div>
+            <pre class="ex-code">{{ ex.code }}</pre>
+          </div>
+        </div>
+
+        <!-- 技巧 -->
+        <div v-if="dslTab === 'tips'" class="docs-pane">
+          <ul class="tips-list">
+            <li v-for="t in dslDocs.tips" :key="t" :class="{ good: t.startsWith('✓'), bad: t.startsWith('✗') }">{{ t }}</li>
+          </ul>
         </div>
       </div>
     </div>
@@ -338,15 +455,102 @@ onMounted(async () => {
   line-height: 1.6;
   margin-bottom: 16px;
 }
-.example { margin-bottom: 12px; }
-.ex-name { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
-.ex-code {
+
+/* ============ DSL 文档区 ============ */
+.docs-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 12px; flex-wrap: wrap; gap: 8px;
+}
+.docs-header h3 { font-size: 16px; }
+.docs-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.docs-tabs button {
   background: var(--bg);
   border: 1px solid var(--border);
-  padding: 8px 12px;
-  border-radius: 6px;
+  color: var(--text-secondary);
+  padding: 5px 12px;
+  border-radius: 14px;
   font-size: 12px;
-  color: var(--yellow);
-  font-family: 'Consolas', monospace;
+  cursor: pointer;
 }
+.docs-tabs button.active { background: var(--yellow); color: #000; border-color: var(--yellow); font-weight: 600; }
+.docs-tabs button:hover:not(.active) { border-color: var(--yellow); }
+
+.docs-pane { font-size: 13px; line-height: 1.6; }
+.overview { color: var(--text-secondary); padding: 8px 12px; background: var(--bg); border-radius: 6px; }
+.docs-pane h4 { margin: 12px 0 8px; font-size: 13px; color: var(--text-secondary); }
+
+/* KV 表 (总览结构) */
+.kv-table { display: flex; flex-direction: column; gap: 4px; }
+.kv-row {
+  display: grid; grid-template-columns: 240px 1fr; gap: 12px;
+  padding: 6px 8px; border-radius: 4px;
+}
+.kv-row:hover { background: var(--bg); }
+.kv-syntax {
+  font-family: 'Consolas', monospace; font-size: 12px;
+  color: var(--yellow); white-space: nowrap;
+}
+.kv-syntax.required::before { content: '⚡ '; color: var(--red); }
+.kv-desc { font-size: 12px; color: var(--text-secondary); }
+.req-mark { color: var(--red); font-size: 10px; margin-left: 4px; }
+
+/* 通用表格 */
+.docs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.docs-table th {
+  text-align: left; padding: 6px 10px;
+  background: var(--bg); color: var(--text-secondary);
+  font-weight: 500; border-bottom: 1px solid var(--border);
+}
+.docs-table td {
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.docs-table code {
+  background: var(--bg-elevated); padding: 1px 6px; border-radius: 3px;
+  color: var(--yellow); font-family: 'Consolas', monospace; font-size: 11px;
+}
+.fn-id { color: var(--yellow); }
+.fn-sig { white-space: nowrap; }
+
+/* 函数分类筛选 */
+.func-cat-filter { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
+.func-cat-filter button {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text-secondary);
+  padding: 3px 10px; border-radius: 12px; font-size: 11px; cursor: pointer;
+}
+.func-cat-filter button.active { background: var(--yellow); color: #000; border-color: var(--yellow); }
+.func-cat { margin-top: 14px; }
+.func-cat-title {
+  font-size: 12px; color: var(--text-muted); margin-bottom: 4px;
+  border-left: 3px solid var(--yellow); padding-left: 8px;
+}
+
+/* 示例 */
+.example { margin-bottom: 14px; padding: 10px 12px; background: var(--bg); border-radius: 6px; }
+.ex-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+}
+.ex-head strong { font-size: 13px; flex: 1; }
+.ex-copy, .ex-apply {
+  background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text-secondary); padding: 2px 10px; border-radius: 4px;
+  font-size: 11px; cursor: pointer;
+}
+.ex-copy:hover, .ex-apply:hover { border-color: var(--yellow); color: var(--yellow); }
+.ex-code {
+  margin: 0; padding: 8px 12px;
+  background: var(--bg-card); border-radius: 4px;
+  font-size: 12px; color: var(--yellow);
+  font-family: 'Consolas', monospace; white-space: pre-wrap;
+  border: 1px solid var(--border);
+}
+
+/* 技巧 */
+.tips-list { list-style: none; padding: 0; margin: 0; }
+.tips-list li {
+  padding: 6px 12px; margin-bottom: 4px; border-radius: 4px;
+  background: var(--bg); font-size: 12px; line-height: 1.6;
+}
+.tips-list li.good { border-left: 3px solid var(--green); }
+.tips-list li.bad { border-left: 3px solid var(--red); }
 </style>

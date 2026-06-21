@@ -1,5 +1,6 @@
 """回测业务: 调度数据 + 策略引擎 + 回测器"""
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional
 import numpy as np
@@ -12,6 +13,10 @@ from backend.data.access import get_kline, get_many
 from backend.backtest import Backtester, compute_metrics, plot_equity
 from backend.strategy import StrategyEngine
 from backend.services.helpers import df_dates, to_records, sanitize, safe
+
+
+# 并行池大小: 数据读取是 IO bound + pandas 计算 CPU bound, 8 线程足够覆盖小池子
+_BT_POOL_WORKERS = min(8, max(2, (os.cpu_count() or 4)))
 
 
 # ============ 因子查询 ============
@@ -162,11 +167,44 @@ def backtest_with_code(symbol: str, code: str, params: dict,
 
 # ============ 池子扫描 ============
 
+def _backtest_one_symbol(sym: str, df: pd.DataFrame, code: str, params: dict,
+                         timeframe: str, position_size: float, leverage: float,
+                         rebalance_bars: int) -> Optional[dict]:
+    """单币回测 (线程安全, 无副作用)。
+    返回: {"symbol", "metrics": {...}, "equity": pd.Series(dtype=float)} 或 None(失败)
+    """
+    try:
+        signal_fn, rules = StrategyEngine.compile(code, params)
+        signal = signal_fn(df)
+        if hasattr(signal, "min") and signal.min() < 0:
+            position = signal.clip(-1, 1).astype(int)
+        else:
+            position = (signal > 0).astype(int)
+        sig_df = pd.DataFrame({
+            "date": df["date"].values,
+            "close": df["close"].values,
+            "position": position,
+        })
+        bt = Backtester()
+        r = bt.run(sig_df, leverage=leverage, position_size=position_size,
+                   rebalance_bars=rebalance_bars)
+        m = compute_metrics(r, timeframe=timeframe)
+        return {
+            "symbol": sym,
+            "metrics": m,
+            "equity": r.set_index("date")["equity"],
+        }
+    except Exception as e:
+        log.warning(f"[backtest_one] {sym} 失败: {e}")
+        return None
+
+
 def scan_pool(strategy_id: int, symbols: list = None, weights: dict = None,
               timeframe: str = None, start: str = None, end: str = None,
               params: dict = None) -> dict:
     """对所有币种跑同一策略, 返回排名 + 组合
     weights: {symbol: weight}, None 或空 = 等权
+    优化: 每币种只跑一次回测, ThreadPoolExecutor 并行
     """
     from backend.storage import crud
     params = params or {}
@@ -198,60 +236,44 @@ def scan_pool(strategy_id: int, symbols: list = None, weights: dict = None,
         log.warning(f"[scan_pool] 策略不存在: id={strategy_id}")
         return {"error": f"策略 ID {strategy_id} 不存在"}
 
-    bt = Backtester()
-    ranking = []
-
     try:
-        signal_fn, rules = StrategyEngine.compile(strategy["code"], params)
-        position_size = rules.get("position_size", 1.0)
+        position_size = float(params.get("position_size", 1.0)) or 1.0
         leverage = float(params.get("leverage", 1))
-    except Exception as e:
-        log.error(f"[scan_pool] 策略编译失败: {e}")
-        return {"error": f"策略编译失败: {e}"}
+        rebalance_bars = sys_config.get("backtest.rebalance_bars", 1) or 1
+    except Exception:
+        position_size, leverage, rebalance_bars = 1.0, 1.0, 1
 
-    success_count = 0
-    fail_count = 0
-    for sym, df in data.items():
-        try:
-            signal = signal_fn(df)
-            if signal.min() < 0:
-                position = signal.clip(-1, 1).astype(int)
-            else:
-                position = (signal > 0).astype(int)
-            sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
-                                   "position": position})
-            r = bt.run(sig_df, leverage=leverage, position_size=position_size,
-                       rebalance_bars=_rebalance_bars(rules))
-            m = compute_metrics(r, timeframe=timeframe)
-            ranking.append(_ranking_row(sym, m))
-            success_count += 1
-        except Exception as e:
-            log.warning(f"[scan_pool] {sym} 失败: {e}")
-            fail_count += 1
+    # 并行回测 (每币种只跑一次, 同时拿到 metrics + equity)
+    items = list(data.items())
+    results = [None] * len(items)
+    with ThreadPoolExecutor(max_workers=_BT_POOL_WORKERS) as ex:
+        futures = {
+            ex.submit(
+                _backtest_one_symbol, sym, df, strategy["code"], params, timeframe,
+                position_size, leverage, rebalance_bars,
+            ): i
+            for i, (sym, df) in enumerate(items)
+        }
+        for fut in futures:
+            results[futures[fut]] = fut.result()
+
+    # 汇总
+    ranking = []
+    all_eq = []
+    success = fail = 0
+    for i, r in enumerate(results):
+        if r is None:
+            fail += 1
+            continue
+        success += 1
+        ranking.append(_ranking_row(r["symbol"], r["metrics"]))
+        w = norm_weights.get(r["symbol"], 1.0 / len(items))
+        all_eq.append((r["equity"] * w).rename(r["symbol"]))
 
     ranking.sort(key=lambda x: x["sharpe"] if x["sharpe"] is not None else -999, reverse=True)
-    log.info(f"[scan_pool] 单币回测完成: 成功 {success_count}, 失败 {fail_count}")
+    log.info(f"[scan_pool] 单币回测完成: 成功 {success}, 失败 {fail}, 线程={_BT_POOL_WORKERS}")
 
-    # 组合曲线 (按权重加权平均)
     combined_df = pd.DataFrame()
-    all_eq = []
-    for sym, df in data.items():
-        try:
-            signal = signal_fn(df)
-            if signal.min() < 0:
-                position = signal.clip(-1, 1).astype(int)
-            else:
-                position = (signal > 0).astype(int)
-            sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
-                                   "position": position})
-            r = bt.run(sig_df, leverage=leverage, position_size=position_size,
-                       rebalance_bars=_rebalance_bars(rules))
-            # 把单币 equity 乘以权重
-            w = norm_weights.get(sym, 1.0 / len(data))
-            eq_w = r.set_index("date")["equity"] * w
-            all_eq.append(eq_w.rename(sym))
-        except Exception:
-            continue
     if all_eq:
         tmp = pd.concat(all_eq, axis=1).ffill().bfill()
         combined_df = pd.DataFrame({"date": tmp.index, "equity": tmp.sum(axis=1).values})
@@ -300,70 +322,69 @@ def filter_symbols(params: dict) -> dict:
     if not data:
         return {"results": [], "count": 0}
 
-    results = []
     strategy = None
+    strategy_code = ""
     if strategy_id:
         from backend.storage import crud
         strategy = crud.get_strategy(strategy_id)
+        if not strategy:
+            return {"error": f"策略 ID {strategy_id} 不存在"}
+        strategy_code = strategy["code"]
 
-    if strategy:
-        try:
-            signal_fn, rules = StrategyEngine.compile(strategy["code"], params)
-        except Exception as e:
-            return {"error": f"策略编译失败: {e}"}
-        bt = Backtester()
-        for sym, df in data.items():
-            if df.empty or len(df) < 50:
-                continue
-            df = df_dates(df, start, end)
-            period_ret = df["close"].iloc[-1] / df["close"].iloc[0] - 1
-            last_close = float(df["close"].iloc[-1])
-            if not (min_ret <= period_ret <= max_ret):
-                continue
-            if not (min_price <= last_close <= max_price):
-                continue
+    items = list(data.items())
+    results = []
 
-            sharpe = 0
-            try:
-                signal = signal_fn(df)
-                if signal.min() < 0:
-                    position = signal.clip(-1, 1).astype(int)
-                else:
-                    position = (signal > 0).astype(int)
-                sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
-                                       "position": position})
-                r = bt.run(sig_df, position_size=rules.get("position_size", 1.0),
-                           rebalance_bars=_rebalance_bars(rules))
-                m = compute_metrics(r, timeframe=timeframe)
-                sharpe = m.get("sharpe", 0) or 0
-            except Exception:
-                pass
+    def _eval_one(sym_df):
+        sym, df = sym_df
+        if df.empty or len(df) < 30:
+            return None
+        dff = df_dates(df, start, end)
+        if len(dff) < 2:
+            return None
+        period_ret = dff["close"].iloc[-1] / dff["close"].iloc[0] - 1
+        last_close = float(dff["close"].iloc[-1])
+        if not (min_ret <= period_ret <= max_ret):
+            return None
+        if not (min_price <= last_close <= max_price):
+            return None
+
+        if strategy:
+            r = _backtest_one_symbol(
+                sym, dff, strategy_code, params, timeframe,
+                float(params.get("position_size", 1.0) or 1.0),
+                float(params.get("leverage", 1)),
+                _rebalance_bars({"rebalance_bars": sys_config.get("backtest.rebalance_bars", 1)}),
+            )
+            if r is None:
+                return None
+            sharpe = r["metrics"].get("sharpe") or 0
             if sharpe < min_sharpe:
-                continue
-            results.append({
+                return None
+            return {
                 "symbol": sym, "last_close": round(last_close, 4),
                 "period_return": round(period_ret * 100, 2),
-                "sharpe": round(sharpe, 2),
-            })
-    else:
-        # 不跑策略, 只按价格/涨幅过滤
-        for sym, df in data.items():
-            if df.empty or len(df) < 30:
-                continue
-            df = df_dates(df, start, end)
-            period_ret = df["close"].iloc[-1] / df["close"].iloc[0] - 1
-            last_close = float(df["close"].iloc[-1])
-            if not (min_ret <= period_ret <= max_ret):
-                continue
-            if not (min_price <= last_close <= max_price):
-                continue
-            results.append({
-                "symbol": sym, "last_close": round(last_close, 4),
-                "period_return": round(period_ret * 100, 2),
-                "sharpe": None,
-            })
+                "sharpe": round(float(sharpe), 2),
+            }
+        return {
+            "symbol": sym, "last_close": round(last_close, 4),
+            "period_return": round(period_ret * 100, 2),
+            "sharpe": None,
+        }
 
-    results.sort(key=lambda x: x.get("sharpe") or -999, reverse=True)
+    # 1) 简单过滤 (无策略) 直接顺序处理, 避免线程开销
+    if not strategy:
+        for it in items:
+            r = _eval_one(it)
+            if r:
+                results.append(r)
+    else:
+        # 2) 有策略时并行回测
+        with ThreadPoolExecutor(max_workers=_BT_POOL_WORKERS) as ex:
+            for r in ex.map(_eval_one, items):
+                if r:
+                    results.append(r)
+
+    results.sort(key=lambda x: (x.get("sharpe") is None, -(x.get("sharpe") or -999)))
     return {"results": results, "count": len(results)}
 
 

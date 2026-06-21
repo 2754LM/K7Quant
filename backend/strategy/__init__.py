@@ -47,13 +47,23 @@ class StrategyEngine:
     """策略解释器"""
 
     @staticmethod
-    def compile(code: str, params: dict = None):
-        """编译策略代码, 返回 (signal_fn, rules)"""
+    def compile(code: str, params: dict = None, mode: str = "strategy"):
+        """编译代码, 返回 (signal_fn, rules)
+
+        mode: "strategy" (默认) 把结果转 0/1 int, 用于回测
+              "factor"  保留浮点原值, 用于自定义因子
+        """
         params = params or {}
         rules = StrategyEngine._parse(code)
-        if "signal" not in rules or not rules["signal"]:
-            raise ValueError("策略必须定义: signal = <表达式>")
-        return StrategyEngine._build_signal_fn(rules["signal"]), rules
+        if "signal" in rules and rules["signal"]:
+            return StrategyEngine._build_signal_fn(rules["signal"], mode=mode), rules
+        # 因子模式: 整段代码 = 单个表达式
+        lines = [ln.strip() for ln in code.split("\n")
+                 if ln.strip() and not ln.strip().startswith("#")]
+        expr = " ".join(lines)
+        if not expr:
+            raise ValueError("策略/因子代码不能为空")
+        return StrategyEngine._build_signal_fn(expr, mode=mode), {"signal": expr, "stop_loss": 0, "take_profit": 0, "position_size": 1.0}
 
     @staticmethod
     def _parse(code: str) -> dict:
@@ -89,7 +99,7 @@ class StrategyEngine:
         return rules
 
     @staticmethod
-    def _build_signal_fn(expr: str):
+    def _build_signal_fn(expr: str, mode: str = "strategy"):
         """把 DSL 表达式编译成可调用函数。
 
         安全实现: **不使用 eval**。先把 AND/OR/NOT 关键字转成位运算符, 再用
@@ -209,7 +219,10 @@ class StrategyEngine:
                 raise
             except Exception as e:
                 raise ValueError(f"表达式求值失败: {e}\n表达式: {expr}")
-            return result.astype(int) if hasattr(result, "astype") else result
+            # 策略模式: 转 int (0/1); 因子模式: 保留浮点
+            if mode == "strategy" and hasattr(result, "astype"):
+                return result.astype(int)
+            return result
 
         return signal_fn
 
@@ -445,38 +458,111 @@ signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND NOT CROSS_DOWN(MA(close, 7), 
 
 
 def get_dsl_docs() -> dict:
+    """DSL 详细文档 - 分类整理, 配示例"""
     return {
-        "syntax": """
-DSL 语法 (类 Excel 公式):
-
-# 注释以 # 开头
-signal = <表达式>          # 必需, 返回 0/1
-止损 = 0.05                # 可选, 5% 止损
-止盈 = 0.15                # 可选, 15% 止盈
-仓位 = 1.0                 # 可选, 满仓 (0-1)
-
-# 支持函数 (来自因子库):
-MA(close, N) / EMA(close, N) / RSI(close, N)
-momentum(close, N) / volatility(close, N)
-zscore(close, N) / drawdown(close, N)
-high_break(close, N) / low_break(close, N)
-volume_ma(volume, N) / volume_ratio(volume, N)
-MACD(close, fast, slow, signal) / boll(close, N, std) / KDJ(close, N, m1, m2)
-ATR(close, N) / ADX(close, N) / CCI(close, N)
-OBV(close) / VWAP(close, N) / MFI(close, N)
-...
-
-# 支持操作符:
-> < >= <= == !=
-AND  OR  NOT
-CROSS_UP(a, b)   # a 上穿 b
-CROSS_DOWN(a, b) # a 下穿 b
-""",
+        "overview": (
+            "DSL 是一套类 Excel 公式的策略描述语言, 一行式表达式。\n"
+            "编译时只做 AST 白名单校验, 禁止属性访问/下标, 无 eval。"
+        ),
+        "structure": [
+            {"syntax": "signal = <表达式>", "required": True,
+             "desc": "买卖信号表达式, 返回 0/1 (或 -1/0/1 表示做空)。每根 K 线都会被求值。"},
+            {"syntax": "止损 = 0.05", "required": False, "desc": "浮亏达 5% 强制平仓。范围 0-1。"},
+            {"syntax": "止盈 = 0.15", "required": False, "desc": "浮盈达 15% 强制平仓。范围 0-1。"},
+            {"syntax": "仓位 = 1.0", "required": False, "desc": "每笔投入资金比例 (0-1)。"},
+            {"syntax": "频率 = 5", "required": False, "desc": "调仓频率, 每 N 根 K 线才允许换仓 (默认 1)。"},
+        ],
+        "columns": [
+            {"name": "close", "desc": "收盘价, 最常用的输入"},
+            {"name": "open", "desc": "开盘价"},
+            {"name": "high", "desc": "最高价"},
+            {"name": "low", "desc": "最低价"},
+            {"name": "volume", "desc": "成交量 (基础币种, 如 BTC)"},
+            {"name": "amount", "desc": "成交额 (计价币种, 如 USDT)"},
+        ],
+        "operators": [
+            {"op": "a > b", "desc": "a 大于 b"},
+            {"op": "a < b", "desc": "a 小于 b"},
+            {"op": "a >= b", "desc": "a 大于等于 b"},
+            {"op": "a <= b", "desc": "a 小于等于 b"},
+            {"op": "a == b", "desc": "a 等于 b (基本用不上, 因为是连续值)"},
+            {"op": "a AND b", "desc": "逻辑与, 两侧必须是 Series (布尔)"},
+            {"op": "a OR b", "desc": "逻辑或"},
+            {"op": "NOT a", "desc": "逻辑非 (前缀)"},
+            {"op": "CROSS_UP(a, b)", "desc": "a 上穿 b: 当前 a>b 且上一根 a≤b。仅作用于两根 K 线。"},
+            {"op": "CROSS_DOWN(a, b)", "desc": "a 下穿 b: 当前 a<b 且上一根 a≥b。"},
+            {"op": "a + b / a - b", "desc": "加减, 两侧都是 Series 时按位运算"},
+            {"op": "a * b / a / b", "desc": "乘除"},
+        ],
+        "functions": [
+            {"cat": "均线类", "items": [
+                {"id": "MA", "sig": "MA(close, 20)", "desc": "简单移动平均线。常用 5/10/20/60/120 周期。"},
+                {"id": "EMA", "sig": "EMA(close, 20)", "desc": "指数加权均线, 对近期更敏感。"},
+                {"id": "WMA", "sig": "WMA(close, 20)", "desc": "线性加权均线。"},
+                {"id": "SMA", "sig": "SMA(close, 20)", "desc": "MA 的别名。"},
+            ]},
+            {"cat": "趋势类", "items": [
+                {"id": "MACD", "sig": "MACD(close, 12, 26, 9)", "desc": "返回 3 列: macd/signal/hist。金叉=macd 上穿 signal。"},
+                {"id": "ADX", "sig": "ADX(close, 14)", "desc": "趋势强度, >25 有趋势, <20 震荡。"},
+                {"id": "supertrend", "sig": "supertrend(close, 10, 3.0)", "desc": "海龟改良趋势, 返回 1/-1。"},
+                {"id": "ichimoku_signal", "sig": "ichimoku_signal(close)", "desc": "一目均衡表, 1=上升 -1=下降。"},
+                {"id": "donchian", "sig": "donchian(close, 20)", "desc": "海龟通道, 返回 upper/lower/mid 三列。"},
+                {"id": "trix", "sig": "trix(close, 15)", "desc": "三重 EMA 的变化率。"},
+            ]},
+            {"cat": "震荡类", "items": [
+                {"id": "RSI", "sig": "RSI(close, 14)", "desc": ">70 超买, <30 超卖, 50 中轴。"},
+                {"id": "KDJ", "sig": "KDJ(close, 9, 3, 3)", "desc": "返回 K/D/J 三列。K<20 买, K>80 卖。"},
+                {"id": "CCI", "sig": "CCI(close, 20)", "desc": ">100 超买, <-100 超卖。"},
+                {"id": "williams_r", "sig": "williams_r(close, 14)", "desc": ">-20 超买, <-80 超卖。"},
+            ]},
+            {"cat": "波动类", "items": [
+                {"id": "boll", "sig": "boll(close, 20, 2.0)", "desc": "布林带, 返回 upper/mid/lower 三列。"},
+                {"id": "ATR", "sig": "ATR(close, 14)", "desc": "平均真实波幅, 衡量波动大小。"},
+                {"id": "volatility", "sig": "volatility(close, 20)", "desc": "年化波动率。"},
+            ]},
+            {"cat": "动量类", "items": [
+                {"id": "momentum", "sig": "momentum(close, 20)", "desc": "N 根涨幅 (小数, 0.1=10%)。"},
+                {"id": "roc", "sig": "roc(close, 20)", "desc": "N 根变化率 (百分比)。"},
+            ]},
+            {"cat": "成交量类", "items": [
+                {"id": "OBV", "sig": "OBV(close)", "desc": "能量潮, 价升量增累计。"},
+                {"id": "VWAP", "sig": "VWAP(close, 20)", "desc": "成交量加权均价。"},
+                {"id": "MFI", "sig": "MFI(close, 14)", "desc": "资金流量, 类似 RSI 但带成交量。"},
+                {"id": "volume_ma", "sig": "volume_ma(volume, 20)", "desc": "成交量均线。"},
+                {"id": "volume_ratio", "sig": "volume_ratio(volume, 20)", "desc": "量比, >1.5 算放量。"},
+                {"id": "amount_ma", "sig": "amount_ma(amount, 20)", "desc": "成交额均线。"},
+                {"id": "chaikin_mf", "sig": "chaikin_mf(close, 20)", "desc": "CMF 资金流, >0 净流入。"},
+            ]},
+            {"cat": "形态类", "items": [
+                {"id": "high_break", "sig": "high_break(close, 20)", "desc": "突破 N 日新高, 返回 0/1。"},
+                {"id": "low_break", "sig": "low_break(close, 20)", "desc": "跌破 N 日新低。"},
+                {"id": "pivot", "sig": "pivot(close)", "desc": "前日轴心点 (H+L+C)/3。"},
+            ]},
+            {"cat": "统计/风险类", "items": [
+                {"id": "zscore", "sig": "zscore(close, 20)", "desc": "标准化分数, |z|>2 异常。"},
+                {"id": "drawdown", "sig": "drawdown(close, 60)", "desc": "N 周期内相对最高点的跌幅。"},
+                {"id": "skew", "sig": "skew(close, 60)", "desc": "收益率偏度, 正=大涨更多。"},
+                {"id": "kurt", "sig": "kurt(close, 60)", "desc": "收益率峰度, 高=极端事件多。"},
+                {"id": "position_pct", "sig": "position_pct(close, 252)", "desc": "价格在 N 日区间内的位置 (0-1)。"},
+            ]},
+        ],
         "examples": [
-            {"name": "双均线", "code": "signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND NOT CROSS_DOWN(MA(close, 7), MA(close, 25))"},
-            {"name": "RSI 阈值", "code": "signal = (RSI(close, 14) < 30) AND NOT (RSI(close, 14) > 70)"},
-            {"name": "多条件", "code": "signal = (RSI(close, 14) < 30) AND (volume > volume_ma(volume, 20))"},
-            {"name": "突破", "code": "signal = high_break(close, 20) AND NOT (close < MA(close, 20))"},
-            {"name": "动量", "code": "signal = momentum(close, 20) > 0"},
-        ]
+            {"name": "双均线交叉 (经典)", "code": "signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND NOT CROSS_DOWN(MA(close, 7), MA(close, 25))\n止损 = 0.05\n止盈 = 0.15\n仓位 = 1.0"},
+            {"name": "RSI 超卖反弹", "code": "signal = (RSI(close, 14) < 30) AND NOT (RSI(close, 14) > 70)"},
+            {"name": "MACD 金叉 + 量能", "code": "signal = CROSS_UP(MACD(close, 12, 26, 9), MACD(close, 12, 26, 9)) AND (volume > volume_ma(volume, 20) * 1.5)"},
+            {"name": "布林带回归", "code": "signal = (close < boll(close, 20, 2.0)) AND (RSI(close, 14) < 35)"},
+            {"name": "突破新高", "code": "signal = high_break(close, 20) AND (close > MA(close, 60))\n止盈 = 0.20"},
+            {"name": "动量轮动", "code": "signal = momentum(close, 20) > 0.05\n频率 = 5"},
+            {"name": "ADX 趋势 + 双均线", "code": "signal = (ADX(close, 14) > 25) AND CROSS_UP(MA(close, 7), MA(close, 25))"},
+            {"name": "量价齐升", "code": "signal = (close > MA(close, 5)) AND (volume_ratio(volume, 10) > 1.5)"},
+        ],
+        "tips": [
+            "✓ 函数第一个参数是数据列 (close/volume/...), 后面是数字参数 (周期等)",
+            "✓ 函数名大小写不敏感 (MA = ma = Ma)",
+            "✓ 比较运算返回 bool Series, 可以直接 AND/OR",
+            "✓ 想做空: 让 signal 返回 -1 (例: signal = -1 * (RSI > 70))",
+            "✗ 不要写赋值 (如 x = MA(...)), 表达式必须单行无副作用",
+            "✗ 不要调用 Python 内置 (如 sum/abs/len 都没暴露)",
+            "✗ 不要下标访问 (df['close'] 这种是不允许的, 直接用 close 列名)",
+        ],
     }

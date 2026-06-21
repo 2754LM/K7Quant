@@ -86,7 +86,7 @@ class Strategy(Base):
 
 
 class Factor(Base):
-    """因子元信息"""
+    """因子元信息 (内置 + 用户自定义 DSL 因子)"""
     __tablename__ = "factors"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -96,6 +96,9 @@ class Factor(Base):
     formula: Mapped[Optional[str]] = mapped_column(Text)
     params_schema: Mapped[Optional[str]] = mapped_column(Text)   # JSON
     description: Mapped[Optional[str]] = mapped_column(Text)
+    is_custom: Mapped[bool] = mapped_column(Boolean, default=False)
+    dsl_code: Mapped[Optional[str]] = mapped_column(Text)       # 用户 DSL 表达式
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     def to_dict(self) -> dict:
         return {
@@ -106,6 +109,8 @@ class Factor(Base):
             "formula": self.formula or "",
             "params_schema": json.loads(self.params_schema) if self.params_schema else {},
             "description": self.description or "",
+            "is_custom": bool(self.is_custom),
+            "dsl_code": self.dsl_code or "",
         }
 
 
@@ -356,6 +361,37 @@ def list_factors(category: str = None) -> list:
         if category:
             q = q.filter(Factor.category == category)
         return [r.to_dict() for r in q.all()]
+
+
+def create_custom_factor(factor_id: str, name_zh: str, category: str,
+                          formula: str, params_schema: dict,
+                          description: str, dsl_code: str) -> dict:
+    """创建用户自定义 DSL 因子"""
+    import json as _json
+    with transaction() as s:
+        existing = s.get(Factor, factor_id)
+        if existing:
+            raise ValueError(f"因子 ID 已存在: {factor_id}")
+        obj = Factor(
+            id=factor_id, name_zh=name_zh, category=category,
+            formula=formula or "", params_schema=_json.dumps(params_schema or {}, ensure_ascii=False),
+            description=description or "",
+            is_custom=True, dsl_code=dsl_code,
+        )
+        s.add(obj)
+        s.flush()
+        return obj.to_dict()
+
+
+def delete_custom_factor(factor_id: str):
+    """删除用户自定义因子 (内置因子不允许删除)"""
+    with transaction() as s:
+        obj = s.get(Factor, factor_id)
+        if not obj:
+            return
+        if not obj.is_custom:
+            raise ValueError(f"内置因子不允许删除: {factor_id}")
+        s.delete(obj)
 
 
 def create_rule(name: str, description: str, rule_json: dict) -> int:

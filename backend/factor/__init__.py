@@ -390,11 +390,51 @@ def list_factors(category: str = None) -> list:
 
 
 def compute_factor(df: pd.DataFrame, factor_id: str, params: dict = None):
-    """计算单个因子, 返回 Series 或 DataFrame"""
+    """计算单个因子, 返回 Series 或 DataFrame
+
+    顺序: 用户自定义因子 -> 内置因子
+    """
     info = FACTOR_REGISTRY.get(factor_id)
     if not info:
         raise ValueError(f"未知因子: {factor_id}")
-    return info["function"](df, **(params or {}))
+    fn = info["function"]
+    # 用户自定义因子: 通过 DSL 引擎编译成可调用
+    if info.get("is_custom") and info.get("dsl_code"):
+        from backend.strategy import StrategyEngine
+        signal_fn, _ = StrategyEngine.compile(info["dsl_code"], params or {}, mode="factor")
+        return signal_fn(df)
+    return fn(df, **(params or {}))
+
+
+def register_custom_factor(factor_id: str, name_zh: str, category: str,
+                            formula: str, params_schema: dict, description: str,
+                            dsl_code: str):
+    """注册一个用户自定义 DSL 因子到运行时注册表。
+    调用 compute_factor 时, 会用 DSL 引擎编译表达式并对 df 求值。
+    """
+    if factor_id in FACTOR_REGISTRY:
+        raise ValueError(f"因子 ID 已存在: {factor_id}")
+    FACTOR_REGISTRY[factor_id] = {
+        "id": factor_id,
+        "name_zh": name_zh,
+        "name_en": "",
+        "category": category,
+        "formula": formula or "",
+        "description": description or "",
+        "params_schema": params_schema or {},
+        "is_custom": True,
+        "dsl_code": dsl_code,
+        "function": _custom_factor_dispatch,  # 占位, 实际走 compute_factor 的 is_custom 分支
+    }
+
+
+def unregister_custom_factor(factor_id: str):
+    FACTOR_REGISTRY.pop(factor_id, None)
+
+
+def _custom_factor_dispatch(df: pd.DataFrame, **_):
+    # 实际逻辑在 compute_factor 里, 这里只是占位让 __init__ 不报错
+    raise RuntimeError("custom factor should be computed via compute_factor()")
 
 
 # ============ 因子分类 ============

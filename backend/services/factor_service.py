@@ -9,10 +9,87 @@ from backend.factor import (
     compute_factor,
     factor_correlation,
     factor_summary,
+    register_custom_factor,
+    unregister_custom_factor,
     CATEGORIES,
 )
 from backend.data.access import get_kline, get_many
 from backend.services.helpers import df_dates, to_records
+
+
+def load_custom_factors_from_db():
+    """启动时从 DB 把用户自定义因子加载到 FACTOR_REGISTRY"""
+    try:
+        from backend.models import list_factors as _db_list
+        rows = _db_list()
+        loaded = 0
+        for r in rows:
+            if r.get("is_custom") and r.get("dsl_code"):
+                try:
+                    register_custom_factor(
+                        factor_id=r["id"], name_zh=r["name_zh"], category=r["category"],
+                        formula=r.get("formula", ""), params_schema=r.get("params_schema", {}),
+                        description=r.get("description", ""), dsl_code=r["dsl_code"],
+                    )
+                    loaded += 1
+                except ValueError:
+                    # 已注册, 跳过
+                    pass
+        if loaded:
+            from backend.core.logger import log
+            log.info(f"[init] 自定义因子加载: {loaded} 个")
+    except Exception as e:
+        from backend.core.logger import log
+        log.warning(f"[init] 自定义因子加载失败: {e}")
+
+
+def create_custom_factor(data: dict) -> dict:
+    """创建自定义因子: 先编译验证 DSL, 再入库 + 注册到运行时"""
+    import json as _json
+    from backend.models import create_custom_factor as _db_create
+    from backend.strategy import StrategyEngine
+
+    factor_id = data["factor_id"]
+    dsl_code = data["dsl_code"].strip()
+    name_zh = data["name_zh"].strip()
+    category = data.get("category", "自定义类").strip() or "自定义类"
+    description = data.get("description", "")
+    formula = data.get("formula") or dsl_code.replace("\n", " ")
+
+    # 1. 编译验证 DSL (有数据时实跑, 无数据时只校验语法)
+    try:
+        from backend.data.access import get_kline
+        _df = get_kline("BTCUSDT", "1d", "20240101", "20250101")
+        if not _df.empty:
+            StrategyEngine.compile(dsl_code, {}, mode="factor")
+        else:
+            # 退而求其次, 解析语法
+            StrategyEngine._parse(dsl_code)
+    except Exception as e:
+        raise ValueError(f"DSL 语法错误: {e}")
+
+    # 2. 入库
+    obj = _db_create(
+        factor_id=factor_id, name_zh=name_zh, category=category,
+        formula=formula, params_schema={}, description=description,
+        dsl_code=dsl_code,
+    )
+
+    # 3. 注册到运行时
+    register_custom_factor(
+        factor_id=factor_id, name_zh=name_zh, category=category,
+        formula=formula, params_schema={},
+        description=description, dsl_code=dsl_code,
+    )
+
+    return obj
+
+
+def delete_custom_factor(factor_id: str):
+    """删除自定义因子"""
+    from backend.models import delete_custom_factor as _db_del
+    _db_del(factor_id)
+    unregister_custom_factor(factor_id)
 
 
 def list_factors(category: str = None) -> dict:

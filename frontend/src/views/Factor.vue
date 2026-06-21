@@ -1,7 +1,8 @@
 <script setup>
 import { ref, computed, watch, nextTick, inject, onUnmounted } from 'vue'
 import { computeFactor, computeFactors, correlateFactors, rankFactors, listFactors,
-  listRules, createRule, deleteRule, validateStrategyCode, createStrategy, getStrategies } from '../api'
+  listRules, createRule, deleteRule, validateStrategyCode, createStrategy, getStrategies,
+  createCustomFactor, deleteCustomFactor, getFactorDslDocs } from '../api'
 import * as echarts from 'echarts'
 
 const cfg = inject('cfg')
@@ -120,6 +121,61 @@ watch(selectedFactor, (f) => {
     }
   }
 })
+
+// ---- 自定义因子 ----
+const customFactorModal = ref(false)
+const customFactorForm = ref({
+  factor_id: '',
+  name_zh: '',
+  category: '自定义类',
+  description: '',
+  dsl_code: '',
+})
+const customFactorError = ref('')
+const customFactorSubmitting = ref(false)
+const dslDocsRef = ref(null)
+
+function openCustomFactorModal() {
+  customFactorForm.value = { factor_id: '', name_zh: '', category: '自定义类', description: '', dsl_code: '' }
+  customFactorError.value = ''
+  customFactorModal.value = true
+  // 异步加载 DSL docs (如果还没加载)
+  if (!dslDocsRef.value) {
+    getFactorDslDocs().then(r => { dslDocsRef.value = r.data }).catch(() => {})
+  }
+}
+
+async function submitCustomFactor() {
+  customFactorError.value = ''
+  customFactorSubmitting.value = true
+  try {
+    await createCustomFactor(customFactorForm.value)
+    customFactorModal.value = false
+    await loadFactorList()
+    msg.value = `✓ 自定义因子已创建: ${customFactorForm.value.name_zh}`
+    // 选中新创建的因子
+    const found = factorList.value.factors.find(f => f.id === customFactorForm.value.factor_id)
+    if (found) selectedFactor.value = found
+  } catch (e) {
+    customFactorError.value = e.response?.data?.detail || e.message
+  } finally {
+    customFactorSubmitting.value = false
+  }
+}
+
+async function delCustomFactor(f) {
+  if (!confirm(`删除自定义因子「${f.name_zh}」?`)) return
+  try {
+    await deleteCustomFactor(f.id)
+    await loadFactorList()
+    msg.value = `✓ 已删除: ${f.name_zh}`
+    if (selectedFactor.value?.id === f.id) selectedFactor.value = factorList.value.factors[0] || null
+  } catch (e) {
+    msg.value = '✗ ' + (e.response?.data?.detail || e.message)
+  }
+}
+
+const msg = ref('')
 
 async function compute() {
   if (!selectedFactor.value) return
@@ -451,6 +507,14 @@ function drawRank() {
 
 const tab = ref('all')  // 默认 all
 const summary = computed(() => singleResult.value?.summary || {})
+const customFactors = computed(() => factorList.value.factors.filter(f => f.is_custom))
+const builtinFactorsCount = computed(() => factorList.value.factors.filter(f => !f.is_custom).length)
+
+function appendDsl(sig) {
+  // 把函数签名插入到 dsl_code 末尾 (简单追加)
+  const fnName = sig.split('(')[0]
+  customFactorForm.value.dsl_code = (customFactorForm.value.dsl_code || '') + ` ${fnName}()`
+}
 
 function fmt(v) { return v === null || v === undefined ? '-' : Number(v).toFixed(4) }
 function pctRank(v) { return v === null || v === undefined ? '-' : (v * 100).toFixed(1) + '%' }
@@ -471,6 +535,7 @@ loadStrategies()
       <button :class="{ active: tab === 'compute' }" @click="tab = 'compute'">单因子</button>
       <button :class="{ active: tab === 'cross' }" @click="tab = 'cross'">多因子相关性</button>
       <button :class="{ active: tab === 'rank' }" @click="tab = 'rank'">跨币种排名</button>
+      <button :class="{ active: tab === 'custom' }" @click="tab = 'custom'">✨ 自定义因子</button>
     </div>
 
     <!-- 单因子 -->
@@ -736,6 +801,118 @@ loadStrategies()
           </div>
         </div>
       </div>
+    <!-- 自定义因子 -->
+    <div v-if="tab === 'custom'" class="card">
+      <div class="custom-factor-header">
+        <div>
+          <h3>✨ 自定义因子 (DSL 表达式)</h3>
+          <p class="workflow-hint">
+            因子 = 一个表达式, 可组合内置因子和数据列, 像 Excel 公式一样写:
+            <code>(close - MA(close, 20)) / MA(close, 20)</code> 表示偏离 20 均线的百分比
+          </p>
+        </div>
+        <button class="btn-primary" @click="openCustomFactorModal">+ 新建自定义因子</button>
+      </div>
+
+      <!-- 自定义因子列表 -->
+      <div v-if="customFactors.length" class="custom-factor-list">
+        <div v-for="f in customFactors" :key="f.id" class="cf-row">
+          <div class="cf-info">
+            <div class="cf-name">
+              <span class="cf-id">{{ f.id }}</span>
+              <strong>{{ f.name_zh }}</strong>
+              <span class="cf-cat">{{ f.category }}</span>
+              <span class="cf-badge">自定义</span>
+            </div>
+            <div class="cf-desc">{{ f.description || '—' }}</div>
+            <pre class="cf-dsl">{{ f.dsl_code }}</pre>
+          </div>
+          <div class="cf-actions">
+            <button class="mini-btn" @click="selectedFactor = f; tab = 'compute'" title="加载到单因子查询">
+              📊 计算
+            </button>
+            <button class="mini-btn danger" @click="delCustomFactor(f)">删除</button>
+          </div>
+        </div>
+      </div>
+      <div v-else class="empty-hint">
+        暂无自定义因子, 点右上角「+ 新建」开始创建。
+      </div>
+
+      <!-- 提示: 已有多少个 -->
+      <div class="custom-factor-counts">
+        <span>内置因子: <strong>{{ builtinFactorsCount }}</strong></span>
+        <span>自定义因子: <strong>{{ customFactors.length }}</strong></span>
+      </div>
+    </div>
+
+    <!-- 自定义因子对话框 -->
+    <div v-if="customFactorModal" class="modal-mask" @click.self="customFactorModal = false">
+      <div class="modal modal-wide">
+        <div class="modal-head">
+          <h3>✨ 新建自定义因子</h3>
+          <button class="modal-close" @click="customFactorModal = false">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-row">
+            <div class="form-group grow">
+              <label>因子 ID <span class="hint-required">*</span></label>
+              <input type="text" v-model="customFactorForm.factor_id"
+                placeholder="例: my_macd_divergence / bias_20" class="code-input" />
+              <span class="param-hint">英文/数字/下划线, 用于在策略里调用。例 <code>my_macd</code></span>
+            </div>
+            <div class="form-group grow">
+              <label>中文名 <span class="hint-required">*</span></label>
+              <input type="text" v-model="customFactorForm.name_zh" placeholder="例: MACD 背离" />
+            </div>
+            <div class="form-group">
+              <label>分类</label>
+              <input type="text" v-model="customFactorForm.category" placeholder="自定义类" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group grow">
+              <label>说明 (选填)</label>
+              <input type="text" v-model="customFactorForm.description"
+                placeholder="一句话讲清楚这个因子度量什么" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group grow">
+              <label>DSL 表达式 <span class="hint-required">*</span></label>
+              <textarea v-model="customFactorForm.dsl_code" rows="4" class="code-area"
+                placeholder="例: (close - MA(close, 20)) / MA(close, 20)"></textarea>
+              <span class="param-hint">
+                可用: close/open/high/low/volume/amount + 全部内置因子 (MA/EMA/RSI/MACD/...)
+                + <code>+ - * /</code> + 比较 <code>&gt; &lt;</code>
+              </span>
+            </div>
+          </div>
+          <details v-if="dslDocsRef" class="dsl-quick-ref">
+            <summary>📖 DSL 函数速查 ({{ dslDocsRef.functions?.length || 0 }} 个分类)</summary>
+            <div class="quick-ref-grid">
+              <div v-for="cat in dslDocsRef.functions" :key="cat.cat" class="quick-cat">
+                <strong>{{ cat.cat }}</strong>
+                <span v-for="fn in cat.items.slice(0, 5)" :key="fn.id"
+                  class="quick-fn" @click="appendDsl(fn.sig)" :title="fn.desc">
+                  {{ fn.id }}
+                </span>
+                <span v-if="cat.items.length > 5" class="quick-more">+{{ cat.items.length - 5 }}</span>
+              </div>
+            </div>
+          </details>
+          <div v-if="customFactorError" class="error-msg">{{ customFactorError }}</div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn-secondary" @click="customFactorModal = false">取消</button>
+          <button class="btn-primary"
+            :disabled="customFactorSubmitting || !customFactorForm.factor_id || !customFactorForm.name_zh || !customFactorForm.dsl_code"
+            @click="submitCustomFactor">
+            {{ customFactorSubmitting ? '验证中...' : '创建并测试' }}
+          </button>
+        </div>
+      </div>
+    </div>
     </div>
   </div>
 </template>
@@ -1115,4 +1292,83 @@ loadStrategies()
   border-color: var(--yellow);
   font-weight: 600;
 }
+
+/* ============ 自定义因子 ============ */
+.custom-factor-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 16px; margin-bottom: 16px;
+}
+.custom-factor-header h3 { font-size: 16px; margin-bottom: 4px; }
+.workflow-hint { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+.workflow-hint code {
+  background: var(--bg-elevated); padding: 1px 6px; border-radius: 3px;
+  color: var(--yellow); font-family: 'Consolas', monospace; font-size: 11px;
+}
+
+.custom-factor-list { display: flex; flex-direction: column; gap: 8px; }
+.cf-row {
+  display: flex; gap: 16px; padding: 12px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.cf-row:hover { border-color: var(--yellow); }
+.cf-info { flex: 1; min-width: 0; }
+.cf-name {
+  display: flex; gap: 8px; align-items: center; margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.cf-id {
+  font-family: 'Consolas', monospace; font-size: 12px; color: var(--yellow);
+  background: var(--bg-elevated); padding: 1px 6px; border-radius: 3px;
+}
+.cf-cat {
+  font-size: 10px; padding: 1px 6px; border-radius: 3px;
+  background: rgba(30,136,229,0.15); color: #64b5f6;
+}
+.cf-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 3px;
+  background: rgba(240,185,11,0.18); color: var(--yellow);
+  font-weight: 600;
+}
+.cf-desc { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.cf-dsl {
+  margin: 0; font-size: 12px; color: var(--yellow);
+  font-family: 'Consolas', monospace;
+  background: var(--bg-elevated); padding: 6px 8px; border-radius: 4px;
+  white-space: pre-wrap; word-break: break-all;
+}
+.cf-actions { display: flex; flex-direction: column; gap: 6px; }
+.cf-actions .mini-btn.danger { color: var(--red); }
+.cf-actions .mini-btn.danger:hover { border-color: var(--red); }
+.empty-hint {
+  padding: 30px; text-align: center; color: var(--text-muted);
+  background: var(--bg); border: 1px dashed var(--border); border-radius: 8px;
+}
+.custom-factor-counts {
+  display: flex; gap: 16px; margin-top: 16px;
+  padding: 8px 12px; background: var(--bg); border-radius: 6px;
+  font-size: 12px; color: var(--text-secondary);
+}
+.custom-factor-counts strong { color: var(--yellow); margin-left: 4px; }
+
+.dsl-quick-ref {
+  margin-top: 12px; padding: 8px 12px;
+  background: var(--bg); border-radius: 6px; border: 1px solid var(--border);
+}
+.dsl-quick-ref summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); }
+.quick-ref-grid { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.quick-cat { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.quick-cat strong {
+  font-size: 11px; color: var(--text-muted); min-width: 70px;
+  border-left: 2px solid var(--yellow); padding-left: 6px;
+}
+.quick-fn {
+  font-family: 'Consolas', monospace; font-size: 11px;
+  background: var(--bg-elevated); padding: 1px 6px; border-radius: 3px;
+  color: var(--yellow); cursor: pointer;
+}
+.quick-fn:hover { background: var(--yellow); color: #000; }
+.quick-more { font-size: 10px; color: var(--text-muted); }
+
+.modal-wide { width: 720px; max-width: 90vw; }
 </style>

@@ -17,7 +17,7 @@ from backend.core import ROOT, LOGS_DIR
 from backend.core.logger import log
 from backend.core.config import load_config
 from backend.storage import init_schema, crud  # noqa
-from backend.services import strategy_service, symbol_service
+from backend.services import strategy_service, symbol_service, factor_service
 from backend.api import (
     backtest_api, factor_api, strategy_api,
     data_api, symbol_api, config_api, trade_api, rule_api,
@@ -25,6 +25,24 @@ from backend.api import (
 
 
 @asynccontextmanager
+def _run_migrations():
+    """轻量迁移: 给已有表加新列 (SQLAlchemy create_all 不会 ALTER)"""
+    from sqlalchemy import text
+    from backend.models import get_engine
+    with get_engine().begin() as conn:
+        # factors 表: 新增 is_custom / dsl_code / created_at
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(factors)")).fetchall()}
+        if "is_custom" not in cols:
+            conn.execute(text("ALTER TABLE factors ADD COLUMN is_custom BOOLEAN DEFAULT 0"))
+            log.info("[migrate] factors.is_custom 已添加")
+        if "dsl_code" not in cols:
+            conn.execute(text("ALTER TABLE factors ADD COLUMN dsl_code TEXT"))
+            log.info("[migrate] factors.dsl_code 已添加")
+        if "created_at" not in cols:
+            conn.execute(text("ALTER TABLE factors ADD COLUMN created_at DATETIME"))
+            log.info("[migrate] factors.created_at 已添加")
+
+
 async def lifespan(app: FastAPI):
     log.info("=" * 60)
     log.info("K7Quant starting...")
@@ -33,10 +51,12 @@ async def lifespan(app: FastAPI):
              f"tf默认={cfg.get('backtest', {}).get('default_timeframe')}")
     init_schema()  # ORM 自动建表
     log.info("[init] ORM 表结构就绪")
+    _run_migrations()
     symbol_service.init_default_symbols()
     log.info("[init] 默认币种注册完成")
     strategy_service.init_builtin_strategies()
     log.info("[init] 内置策略注册完成")
+    factor_service.load_custom_factors_from_db()
     log.info("Config loaded, DB initialized, builtin strategies registered")
     log.info("=" * 60)
     yield
