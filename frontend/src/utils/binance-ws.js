@@ -1,6 +1,6 @@
 // Binance 实时行情 WebSocket
-// 单例 per (symbol, interval), 多订阅复用同一连接, 避免开太多 socket
-const streams = new Map()  // key = "{symbol}@kline_{interval}" -> { ws, subscribers: Set, lastBar: Object|null }
+// 单例 per stream, 多订阅复用同一连接, 避免开太多 socket
+const streams = new Map()  // key = stream name -> { ws, subscribers: Set, lastValue: Object|null }
 const FRAMES = 1440  // 1m 一根, 1440 = 24h
 
 /**
@@ -17,15 +17,53 @@ export function subscribeKline(symbol, interval, onUpdate) {
 
   let entry = streams.get(key)
   if (!entry) {
-    entry = { ws: null, subscribers: new Set(), lastBar: null, reconnectTimer: null, alive: true }
+    entry = _createEntry(parseKlineMessage)
     streams.set(key, entry)
     _connect(key, entry)
   }
   entry.subscribers.add(onUpdate)
 
   // 立即把最近一根 K 线推给新订阅者 (避免空白期)
-  if (entry.lastBar) onUpdate(entry.lastBar)
+  if (entry.lastValue) onUpdate(entry.lastValue)
 
+  return _unsubscribe(key, onUpdate)
+}
+
+/**
+ * 订阅 Binance 24h ticker stream
+ * @param symbol e.g. "BTCUSDT"
+ * @param onUpdate 收到最新 ticker 时调用
+ * @returns unsubscribe 函数
+ */
+export function subscribeTicker(symbol, onUpdate) {
+  const s = symbol.toLowerCase()
+  const key = `${s}@ticker`
+
+  let entry = streams.get(key)
+  if (!entry) {
+    entry = _createEntry(parseTickerMessage)
+    streams.set(key, entry)
+    _connect(key, entry)
+  }
+  entry.subscribers.add(onUpdate)
+
+  if (entry.lastValue) onUpdate(entry.lastValue)
+
+  return _unsubscribe(key, onUpdate)
+}
+
+function _createEntry(parseMessage) {
+  return {
+    ws: null,
+    subscribers: new Set(),
+    lastValue: null,
+    reconnectTimer: null,
+    alive: true,
+    parseMessage,
+  }
+}
+
+function _unsubscribe(key, onUpdate) {
   return () => {
     if (!streams.has(key)) return
     const e = streams.get(key)
@@ -53,21 +91,11 @@ function _connect(key, entry) {
   ws.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data)
-      // Binance kline 事件格式: { e: "kline", k: { t, o, h, l, c, v, ... x: 是否已关闭 } }
-      const k = msg.k
-      if (!k) return
-      const bar = {
-        time: k.t,
-        open: parseFloat(k.o),
-        high: parseFloat(k.h),
-        low: parseFloat(k.l),
-        close: parseFloat(k.c),
-        volume: parseFloat(k.v),
-        closed: !!k.x,
-      }
-      entry.lastBar = bar
+      const value = entry.parseMessage(msg)
+      if (!value) return
+      entry.lastValue = value
       for (const sub of entry.subscribers) {
-        try { sub(bar) } catch {}
+        try { sub(value) } catch {}
       }
     } catch {}
   }
@@ -87,6 +115,37 @@ function _scheduleReconnect(key, entry) {
   entry.reconnectTimer = setTimeout(() => {
     if (entry.alive) _connect(key, entry)
   }, 3000)
+}
+
+function parseKlineMessage(msg) {
+  // Binance kline 事件格式: { e: "kline", k: { t, o, h, l, c, v, ... x: 是否已关闭 } }
+  const k = msg.k
+  if (!k) return null
+  return {
+    time: k.t,
+    open: parseFloat(k.o),
+    high: parseFloat(k.h),
+    low: parseFloat(k.l),
+    close: parseFloat(k.c),
+    volume: parseFloat(k.v),
+    closed: !!k.x,
+  }
+}
+
+function parseTickerMessage(msg) {
+  if (!msg || !msg.s || msg.c == null) return null
+  return {
+    symbol: msg.s,
+    eventTime: msg.E,
+    price: parseFloat(msg.c),
+    priceChange: parseFloat(msg.p),
+    priceChangePercent: parseFloat(msg.P),
+    open: parseFloat(msg.o),
+    high: parseFloat(msg.h),
+    low: parseFloat(msg.l),
+    volume: parseFloat(msg.v),
+    quoteVolume: parseFloat(msg.q),
+  }
 }
 
 export function closeAllStreams() {

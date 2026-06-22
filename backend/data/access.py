@@ -35,15 +35,22 @@ def get_kline(symbol: str, timeframe: str = None,
         if df is not None and len(df) > 10:
             cached_df = df
             try:
-                cached_min = str(df["date"].min())[:10]
-                cached_max = str(df["date"].max())[:10]
+                cached_min = _date_to_ymd(df["date"].min())
+                cached_max = _date_to_ymd(df["date"].max())
             except Exception:
                 pass
             filtered = _filter(df, start, end)
-            if not filtered.empty:
+            cache_covers_range = (
+                cached_min is not None and cached_max is not None
+                and cached_min <= start and cached_max >= end
+            )
+            if not filtered.empty and cache_covers_range:
                 log.debug(f"[cache HIT] {symbol} {tf} ({len(filtered)} rows from {len(df)} cached)")
                 return filtered
-            log.info(f"[cache STALE] {symbol} {tf}: cache [{cached_min}..{cached_max}] 不覆盖请求 [{start}..{end}]")
+            log.info(
+                f"[cache STALE] {symbol} {tf}: cache [{cached_min}..{cached_max}] "
+                f"不覆盖请求 [{start}..{end}]"
+            )
 
     try:
         log.info(f"[fetch] {symbol} {tf} range={start}..{end}")
@@ -93,6 +100,10 @@ def _filter(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     if df.empty:
         return df
     return df[(df["date"] >= start) & (df["date"] <= end)].reset_index(drop=True)
+
+
+def _date_to_ymd(value) -> str:
+    return pd.to_datetime(value).strftime("%Y%m%d")
 
 
 def _resolve_end_date() -> str:

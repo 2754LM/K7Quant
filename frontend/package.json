@@ -4,8 +4,9 @@
   "version": "3.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "postinstall": "node scripts/patch-klinecharts-pro.mjs",
+    "dev": "node scripts/patch-klinecharts-pro.mjs && vite",
+    "build": "node scripts/patch-klinecharts-pro.mjs && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
