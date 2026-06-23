@@ -40,5 +40,16 @@ def safe(v):
     return v
 
 
+def fmt(v, spec=".4f", na="N/A"):
+    """safe + format: None/NaN/inf 返回 na, 否则 format(spec)."""
+    v = safe(v)
+    if v is None:
+        return na
+    try:
+        return format(v, spec)
+    except (TypeError, ValueError):
+        return na
+
+
 def sanitize(metrics: dict) -> dict:
     return {k: safe(v) for k, v in (metrics or {}).items()}

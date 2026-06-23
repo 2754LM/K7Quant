@@ -14,7 +14,7 @@ from backend.backtest import Backtester, compute_metrics, plot_equity
 from backend.strategy import StrategyEngine
 from backend.strategy.sandbox import PythonStrategy
 from backend.strategy.context import build_ctx_series
-from backend.services.helpers import df_dates, to_records, sanitize, safe
+from backend.services.helpers import df_dates, to_records, sanitize, safe, fmt
 
 
 # 并行池大小: 数据读取是 IO bound + pandas 计算 CPU bound, 8 线程足够覆盖小池子
@@ -159,7 +159,7 @@ def backtest_single(symbol: str, strategy_id: int, params: dict,
     except Exception as e:
         log.warning(f"保存回测记录失败: {e}")
 
-    log.info(f"[backtest_single] 完成: {symbol} ({code_type}) ret={safe(metrics.get('total_return')):.4f} sharpe={safe(metrics.get('sharpe')):.2f}")
+    log.info(f"[backtest_single] 完成: {symbol} ({code_type}) ret={fmt(metrics.get('total_return'))} sharpe={fmt(metrics.get('sharpe'), '.2f')}")
 
     # Python 策略附 trades 给前端展示
     extra = {}
@@ -427,7 +427,7 @@ def scan_pool(strategy_id: int, symbols: list = None, weights: dict = None,
         combined_metrics = compute_metrics(combined_df, bench, timeframe)
 
     elapsed = _time.time() - t0
-    log.info(f"[scan_pool] 完成: {len(ranking)} 个排名, 组合收益={safe(combined_metrics.get('total_return')):.4f}, 耗时 {elapsed:.2f}s")
+    log.info(f"[scan_pool] 完成: {len(ranking)} 个排名, 组合收益={fmt(combined_metrics.get('total_return'))}, 耗时 {elapsed:.2f}s")
 
     return {
         "ranking": ranking, "count": len(ranking),
