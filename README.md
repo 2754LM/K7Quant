@@ -6,13 +6,15 @@
 
 ## ✨ 核心特性
 
-- 📊 **8 种内置策略**：双均线/RSI/MACD/动量轮动/突破新高/布林带均值回归/量价齐升/ADX 趋势跟随
-- ⏱️ **13 种 K 线周期**：1m / 5m / 15m / 1h / 4h / 1d / 1w 等，**支持自定义周期** (如 `8h`, `90m`)
-- 🔬 **33+ 因子库**：MA / EMA / RSI / MACD / BOLL / KDJ / ATR / OBV / VWAP 等，每因子都有中文说明
+- 📊 **9 种内置策略**：8 种 DSL (双均线/RSI/MACD/动量轮动/突破新高/布林带均值回归/量价齐升/ADX 趋势跟随) + **1 种 Python 沙箱** (Martingale 网格)
+- ⏱️ **16 种 Binance 官方 K 线周期**：`1s` / `1m` / `3m` / `5m` / `15m` / `30m` / `1h` / `2h` / `4h` / `6h` / `8h` / `12h` / `1d` / `3d` / `1w` / `1M` (Binance 官方白名单,前端统一按类别分组)
+- 🔬 **33+ 因子库**：MA / EMA / RSI / MACD / BOLL / KDJ / ATR / OBV / VWAP 等,每因子都有中文说明
 - 💎 **25 个 USDT 币种**：BTC/ETH/SOL/BNB 等主流 + 完整元信息 (中英文/分类/市值排名/简介)
-- 🛠️ **DSL 自定义策略**：类 Python 表达式，`signal = ...` + 可选止损/止盈/仓位/频率，**实时校验**
-- 📊 **多周期对比**：同一策略同时跑 4h/1d/1w 等多周期，曲线叠加对比
-- 🎯 **一键扫描**：默认跑活跃池所有币种，按夏普排序，前 3 名奖牌标记
+- 🛠️ **DSL 自定义策略**：类 Python 表达式,`signal = ...` + 可选止损/止盈/仓位/频率,**实时校验**
+- 🐍 **Python 沙箱策略**：`def init()` + `def on_bar(state)`,支持状态/循环/动态仓位 (Martingale/网格/趋势跟踪 等)
+- 🕐 **多 timeframe 上下文**：策略可声明 `context_timeframes: ["15m", "1h"]`,DSL 里直接用 `ctx_15m_close` / `ctx_1h_ma20`,Python 用 `ctx.klines(tf, n)` / `ctx.factor()`
+- 📊 **多周期对比**：同一策略同时跑 4h/1d/1w 等多周期,曲线叠加对比
+- 🎯 **一键扫描**：默认跑活跃池所有币种,按夏普排序,前 3 名奖牌标记
 - 📈 **专业图表**：净值曲线 (vs BTC 基准) + K线 + MA7/25/99/BOLL/EMA/成交量叠加
 - 🔍 **多条件筛选**：6 个预设场景 + 自定义阈值 + 因子条件构建器
 - 💬 **系统日志面板**：顶部 🔔 显示所有 API 调用/错误，方便排查
@@ -106,7 +108,7 @@ K7Quant/
 │   ├── core/                   # 基础设施 (config + logger + paths + db engine)
 │   ├── data/                   # 数据层 (fetcher + cache + access)
 │   ├── factor/                 # 因子库 (33+ 预置因子 + 自动注册)
-│   ├── strategy/               # DSL 引擎 + 8 个内置策略
+│   ├── strategy/               # DSL 引擎 + Python 沙箱 + 9 个内置策略 (DSL×8 + Python×1)
 │   ├── backtest/               # Backtester + compute_metrics + 绘图
 │   └── storage/                # 兼容层 (旧 crud/db 的别名, 新代码用 models)
 │
@@ -196,6 +198,8 @@ K7Quant/
 
 ## 📊 内置策略
 
+### DSL 策略 (表达式型)
+
 | ID | 名称 | 类型 | 适合 |
 |----|------|------|------|
 | `双均线交叉` | MA(7) 上穿 MA(25) | trend | 趋势市 |
@@ -206,13 +210,22 @@ K7Quant/
 | `布林带均值回归` | zscore < -2 | mean_reversion | 反转 |
 | `量价齐升` | volume + MA 配合 | volume | 异动 |
 | `ADX 趋势跟随` | MA 交叉 + ADX > 25 | trend | 强趋势 |
+| `多周期共振 (15m+1h)` | `ctx_15m_close > ctx_15m_ma20 AND ctx_1h_close > ctx_1h_ma20` | trend | 大级别共振 |
+
+### Python 沙箱策略 (有状态型)
+
+| ID | 名称 | 说明 |
+|----|------|------|
+| `Martingale 网格` | 价格跌 1% 加倍仓位,涨回去止盈 | 适合震荡市低吸,演示 `state` / `buy()` / `sell_all()` 用法 |
 
 ## 🛠️ DSL 策略编写
+
+### DSL 表达式策略 (简单/无状态)
 
 ```python
 # 双均线交叉示例
 signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND NOT CROSS_DOWN(MA(close, 7), MA(close, 25))
-止损 = 0.05      # 5% 止损
+止损 = 0.05      # 5% 止损 (写 0 表示不设止损)
 止盈 = 0.15      # 15% 止盈
 仓位 = 1.0       # 满仓
 ```
@@ -222,6 +235,65 @@ signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND NOT CROSS_DOWN(MA(close, 7), 
 支持的逻辑：`AND / OR / NOT / CROSS_UP / CROSS_DOWN`，比较运算符 `> < >= <= == !=`
 
 **安全**: AST 白名单解释执行，禁止 eval/属性访问/下标。
+
+### Python 沙箱策略 (有状态)
+
+适用场景：Martingale/网格/动态仓位/跨 bar 状态 等需要状态的策略。代码类型 `python`，模板内置。
+
+```python
+def init():
+    """可选：返回初始 state dict (跨 bar 持久化)"""
+    return {"entry": 0.0, "qty": 0.0, "grids": 0}
+
+def on_bar(state):
+    """必填：每根 K 线调用一次"""
+    p = ctx.now()        # 当前 close
+    if ctx.position() > 0 and p < state["entry"] * 0.99 and state["grids"] < 5:
+        # 价格跌 1% 加倍仓,最多 5 次
+        state["entry"] = p
+        state["qty"] = ctx.position() * 2
+        state["grids"] += 1
+        buy(state["qty"])
+    elif ctx.position() > 0 and p > state["entry"] * 1.02:
+        # 涨 2% 全平
+        sell_all()
+```
+
+**沙箱 globals**：`pd / np / math / json / datetime / ctx / state / buy(usdt) / sell(coin_qty) / sell_all() / cash() / equity() / position()`
+
+**安全**：AST 白名单拒绝 `import / async / dunder / open / exec / eval / getattr / setattr`。单 bar 抛错只跳过该 bar。
+
+### 多 timeframe 上下文 (DSL + Python 都支持)
+
+策略可声明 `context_timeframes: ["15m", "1h"]` + `context_lookback: 20`。系统自动拉取这些 tf 的 K 线,计算到主 bar 截止时间的最新值与统计量。
+
+**DSL 里直接用**：
+
+```python
+# 主图 5m + 上下文 15m / 1h
+signal = (ctx_15m_close > ctx_15m_ma20)              # 15m 站上 ma20
+        AND (ctx_1h_close > ctx_1h_ma20)              # 1h 也站上 ma20
+        AND (close > MA(close, 25))                   # 主图 5m 站上 ma25
+止损 = 0.05
+```
+
+自动生成的变量（每个 tf × 每个 col × 每个统计）：
+- `ctx_<tf>_close / open / high / low / volume` — 截至主 bar 时间的最新值
+- `ctx_<tf>_ma20 / max20 / min20 / std20 / sum20` — 最近 20 根的统计 (lookback 可调)
+
+**Python 里通过 ctx**：
+
+```python
+def on_bar(state):
+    df15 = ctx.klines("15m", 20)            # 最近 20 根 15m K 线 (截至当前 bar)
+    close15 = ctx.series("15m", "close", 20) # 同上,只取 close 列
+    ma20 = ctx.ref_tf("15m", "close", 20).mean()
+    macd = ctx.factor("macd", "15m", 20)    # 在 15m 上跑 MACD 因子
+    if ctx.now_tf("15m") > ma20:
+        buy(100)
+```
+
+**适用场景**：大级别共振 / 多周期趋势确认 / 跨周期套利 / 减少假突破 等。
 
 ## 🛠️ 技术栈
 
