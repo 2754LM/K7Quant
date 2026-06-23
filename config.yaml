@@ -6,10 +6,11 @@ server:
 data_source:
   exchange: binance
   api_base: https://api.binance.com
+  demo_api_base: https://demo-api.binance.com
   timeout: 5
   retries: 1
   proxy:
-    enabled: false
+    enabled: true
     http: ''
     https: ''
 backtest:
@@ -23,9 +24,23 @@ backtest:
   default_timeframe: 4h
   start_date: '20240101'
   end_date: auto
-# timeframes 字段从 Binance 白名单自动派生 (后端 /api/data/timeframes)
-# 不再硬编码, 如需调整显示顺序可在这里覆盖
-# timeframes: []
+timeframes:
+- 12h
+- 15m
+- 1M
+- 1d
+- 1h
+- 1m
+- 1s
+- 1w
+- 2h
+- 30m
+- 3d
+- 3m
+- 4h
+- 5m
+- 6h
+- 8h
 ui:
   theme: dark
   show_help_tooltips: true
@@ -33,6 +48,7 @@ ui:
 trading:
   enabled: false
   mode: simulation
+  recv_window: 5000
   max_position_pct: 0.3
   max_total_pct: 0.95
   stop_loss_pct: 0.05

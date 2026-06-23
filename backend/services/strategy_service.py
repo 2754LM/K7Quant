@@ -11,36 +11,59 @@ from backend.strategy import (
 from backend.factor import list_factors as _list_factors
 
 
+def _code_looks_like_python(code: str) -> bool:
+    """简单检测 code 是不是 Python (有 def 关键字 / 缩进函数体)"""
+    return ("def init" in code or "def on_bar" in code
+            or "import " in code.split("\n")[0])
+
+
 def init_builtin_strategies():
-    """启动时把预置策略写入 DB (如果还没有); 已存在则同步 params_schema / description / code"""
+    """启动时把预置策略写入 DB (如果还没有); 已存在则同步 params_schema / description / code
+
+    内置策略 code 总是从 BUILTIN_STRATEGIES 重置 (避免被前端的 switchCodeType 流程覆盖成 Python 模板)
+    用户想改 builtin 应该用"另存为新策略"
+    """
     existing = {s["name"]: s for s in crud.list_strategies()}
     for s in get_builtin_strategies():
         ct = s.get("code_type", "dsl")
         ctx_tfs = s.get("context_timeframes") or []
         ctx_n = int(s.get("context_lookback") or 20)
         if s["name"] in existing:
-            # 已存在: 同步 params_schema (允许新增 unit/hint 等字段, 不影响用户自定义修改的 name/code)
             old = existing[s["name"]]
             sid = old["id"]
-            # 只在 schema 有差异时更新, 避免无谓写库
+            # 检测 code 是否需要重置 (旧 code 与模板不一致, 或 code_type/code 不匹配)
+            code_mismatch = old.get("code") != s["code"]
+            type_mismatch = old.get("code_type", "dsl") != ct
+            # 检测 type 与 code 实际语言不一致 (例如 dsl type 但代码是 Python)
+            type_code_mismatch = (
+                (ct == "dsl" and _code_looks_like_python(old.get("code", ""))) or
+                (ct == "python" and not _code_looks_like_python(old.get("code", "")))
+            )
             schema_changed = old.get("params_schema") != s["params_schema"]
             desc_changed = old.get("description") != s["description"]
-            type_changed = old.get("code_type", "dsl") != ct
             ctx_changed = (old.get("context_timeframes") or []) != ctx_tfs
             ctx_n_changed = int(old.get("context_lookback") or 20) != ctx_n
-            if schema_changed or desc_changed or type_changed or ctx_changed or ctx_n_changed:
+
+            need_update = (type_mismatch or type_code_mismatch or
+                           schema_changed or desc_changed or
+                           ctx_changed or ctx_n_changed)
+            if need_update:
                 try:
                     crud.update_strategy(
                         strategy_id=sid,
-                        name=old["name"],  # 保留原名
+                        name=old["name"],
                         description=s["description"],
                         category=old.get("category") or s["category"],
-                        code=old["code"],  # 保留原 code (可能用户改过)
+                        # 内置策略 code 总是从模板重置 (修复用户切换 code_type 时被覆盖的 bug)
+                        code=s["code"],
                         code_type=ct,
                         params_schema=s["params_schema"],
                         context_timeframes=ctx_tfs,
                         context_lookback=ctx_n,
                     )
+                    if type_code_mismatch or type_mismatch:
+                        print(f"[init_builtin_strategies] {s['name']} (id={sid}) "
+                              f"code 已重置 (之前 type={old.get('code_type','dsl')}/code 错配)")
                 except Exception as e:
                     print(f"[init_builtin_strategies] update {s['name']} 失败: {e}")
             continue

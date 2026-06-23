@@ -177,37 +177,8 @@ function useTemplate(t) {
 
 function switchCodeType(type) {
   if (editForm.value.code_type === type) return
-  if (type === 'python' && !editForm.value.code.includes('def on_bar')) {
-    // 切到 Python 但当前代码不像 Python, 给个默认模板
-    if (!confirm('切到 Python 模式会替换当前代码为默认 Python 模板, 继续?')) return
-    editForm.value.code = `# Python 策略: 自定义 on_bar + buy/sell
-# 跌 1% 翻倍加仓, 涨 0.5% 全平
-
-def init():
-    return {"entry": 0, "qty": 0, "base": 100, "grids": 0}
-
-def on_bar(state):
-    p = ctx.now()
-    if p <= 0:
-        return
-    if state["entry"] == 0:
-        state["entry"] = p
-        state["qty"] = state["base"]
-        buy(state["qty"])
-        return
-    if p < state["entry"] * 0.99 and state["grids"] < 5:
-        state["entry"] = p
-        state["qty"] *= 2
-        state["grids"] += 1
-        buy(state["qty"])
-        return
-    if p > state["entry"] * 1.005:
-        sell_all()
-        state["entry"] = 0
-        state["qty"] = state["base"]
-        state["grids"] = 0
-`
-  }
+  // 只切换 code_type, 不动 code (避免切回时丢失原代码)
+  // 如果用户想要 Python 模板, 用 "模板" 按钮或者新建策略
   editForm.value.code_type = type
   validate()
 }
