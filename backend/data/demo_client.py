@@ -201,6 +201,50 @@ class BinanceDemoClient:
         params = {"symbol": symbol.upper(), "limit": min(int(limit), 1000)}
         return self._signed_request("GET", "/api/v3/myTrades", params)
 
+    def cancel_open_orders(self, symbol: str) -> list:
+        """撤销某交易对的全部挂单, 返回被撤订单列表 (DELETE /openOrders)。"""
+        return self._signed_request("DELETE", "/api/v3/openOrders", {"symbol": symbol.upper()})
+
+    def ticker_price(self, symbol: str) -> float:
+        """最新成交价 (公开端点, 估算名义额 / 判 dust 用)。"""
+        data = self._public_request("/api/v3/ticker/price", {"symbol": symbol.upper()})
+        return float(data.get("price") or 0)
+
+    def symbol_filters(self, symbol: str) -> dict:
+        """交易对下单规则 (公开 exchangeInfo): 数量步进 / 最小数量 / 最小名义额。
+        市价单优先用 MARKET_LOT_SIZE 步进, 缺省 (0) 回退 LOT_SIZE。"""
+        data = self._public_request("/api/v3/exchangeInfo", {"symbol": symbol.upper()})
+        syms = data.get("symbols", [])
+        if not syms:
+            raise DemoApiError(None, f"未找到交易对 {symbol}")
+        s = syms[0]
+        out = {
+            "symbol": s.get("symbol"), "status": s.get("status"),
+            "step_str": None, "step": 0.0, "min_qty": 0.0,
+            "market_step_str": None, "market_step": 0.0, "min_notional": 0.0,
+        }
+        for f in s.get("filters", []):
+            t = f.get("filterType")
+            if t == "LOT_SIZE":
+                out["step_str"] = f.get("stepSize")
+                out["step"] = float(f.get("stepSize") or 0)
+                out["min_qty"] = float(f.get("minQty") or 0)
+            elif t == "MARKET_LOT_SIZE":
+                out["market_step_str"] = f.get("stepSize")
+                out["market_step"] = float(f.get("stepSize") or 0)
+            elif t in ("NOTIONAL", "MIN_NOTIONAL"):
+                mn = f.get("minNotional") or f.get("notional")
+                if mn:
+                    out["min_notional"] = float(mn)
+        if out["market_step"] <= 0:
+            out["market_step"] = out["step"]
+            out["market_step_str"] = out["step_str"]
+        return out
+
+    def server_now_ms(self) -> int:
+        """与服务器对齐的当前毫秒 (作重置时间基准, 过滤旧成交用)。"""
+        return self._now_ms()
+
     # ---- 诊断 ----
     def connectivity(self) -> dict:
         """ping + 签名探测 account, 校验凭据是否有效。"""

@@ -450,3 +450,12 @@ def list_trades(mode: str = None, limit: int = 100) -> list:
             q = q.filter(Trade.mode == mode)
         q = q.order_by(Trade.id.desc()).limit(limit)
         return [r.to_dict() for r in q.all()]
+
+
+def clear_trades(mode: str = None) -> int:
+    """删除本地交易审计记录, 返回删除条数。mode 为空则清全部 (慎用)。"""
+    with transaction() as s:
+        q = s.query(Trade)
+        if mode:
+            q = q.filter(Trade.mode == mode)
+        return q.delete(synchronize_session=False)

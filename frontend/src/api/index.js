@@ -96,5 +96,12 @@ export const cancelOrder = (symbol, orderId) =>
   api.delete('/trade/order', { params: { symbol, order_id: orderId } })
 export const getMyTrades = (symbol, limit = 50) =>
   api.get('/trade/my-trades', { params: { symbol, limit } })
+// 沙盒重置: 撤所有挂单 + 市价平仓换回 USDT + 清本地审计记录
+export const resetSandbox = () => api.post('/trade/reset-sandbox')
+// 策略实盘运行
+export const getLiveStatus = () => api.get('/trade/live/status')
+export const startLive = (data) => api.post('/trade/live/start', data)
+export const stopLive = (flatten = false) =>
+  api.post('/trade/live/stop', null, { params: { flatten } })
 
 export default api

@@ -28,6 +28,13 @@ class OrderRequest(BaseModel):
     time_in_force: str = "GTC"
 
 
+class LiveStartRequest(BaseModel):
+    strategy_id: int
+    symbol: str
+    timeframe: str = "1h"
+    params: dict = {}
+
+
 # ---- 状态 / 诊断 ----
 @router.get("/status")
 def get_status():
@@ -78,3 +85,25 @@ def list_trades(mode: Optional[str] = None, limit: int = 100):
 def record(req: RecordRequest):
     tid = trade_service.record_trade(**req.dict())
     return {"ok": True, "id": tid}
+
+
+# ---- 沙盒重置 (一键平仓 + 清本地) ----
+@router.post("/reset-sandbox")
+def reset_sandbox():
+    return trade_service.reset_sandbox()
+
+
+# ---- 策略实盘运行 ----
+@router.get("/live/status")
+def live_status():
+    return trade_service.live_status()
+
+
+@router.post("/live/start")
+def live_start(req: LiveStartRequest):
+    return trade_service.live_start(req.strategy_id, req.symbol, req.timeframe, req.params)
+
+
+@router.post("/live/stop")
+def live_stop(flatten: bool = False):
+    return trade_service.live_stop(flatten)

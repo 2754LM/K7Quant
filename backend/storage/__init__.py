@@ -17,7 +17,7 @@ from backend.models import (
     list_factors,
     list_rules, create_rule, delete_rule,
     list_backtest_runs, save_backtest_run,
-    list_trades, insert_trade,
+    list_trades, insert_trade, clear_trades,
 )
 
 # 旧 db.py 接口的别名

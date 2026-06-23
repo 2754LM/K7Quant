@@ -61,6 +61,11 @@ async def lifespan(app: FastAPI):
     log.info("=" * 60)
     yield
     log.info("K7Quant shutting down...")
+    try:
+        from backend.services.live_trader import get_live_trader
+        get_live_trader().stop()
+    except Exception as e:
+        log.warning(f"[shutdown] 停止实盘运行器失败: {e}")
 
 
 app = FastAPI(

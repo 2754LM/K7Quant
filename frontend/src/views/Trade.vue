@@ -7,6 +7,7 @@ import { BinanceDatafeed } from '../utils/klinechart-datafeed'
 import {
   getTradeConnectivity, getTradeStatus, getTradeAccount,
   getOpenOrders, placeOrder, cancelOrder, listTrades, listSymbols, getExchangeInfo, getMyTrades,
+  resetSandbox, getStrategies, getLiveStatus, startLive, stopLive,
 } from '../api'
 import { subscribeTicker } from '../utils/binance-ws'
 import { buildTradeAnalytics } from '../utils/trade-stats'
@@ -46,9 +47,28 @@ const toasts = ref([])   // 左下角气泡通知
 const lastWsUpdateAt = ref(null)
 const lastDataRefreshAt = ref(null)
 const ACCOUNT_HISTORY_KEY = 'k7quant:trade-account-value-history'
+const RESET_EPOCH_KEY = 'k7quant:trade-reset-epoch'
 const STABLE_ASSETS = new Set(['USDT', 'USDC', 'BUSD', 'FDUSD', 'TUSD', 'USDP', 'DAI'])
+const DUST_USDT = 5            // 预览里低于该市值的持仓视作可能卖不掉的 dust (后端按 minNotional 最终判定)
 const expandedOrderIds = ref(new Set())
 let toastSeq = 0
+
+// ---- 沙盒重置 ----
+const resetEpoch = ref(loadResetEpoch())   // 重置时间点(ms): 过滤此前的币安成交, 让曲线/收益归零
+const showResetModal = ref(false)
+const resetting = ref(false)
+const resetReport = ref(null)              // 执行后战报; null 时弹窗显示确认预览
+
+// ---- 策略实盘 ----
+const strategies = ref([])
+const live = ref({ running: false, logs: [] })
+const liveForm = reactive({ strategyId: null, symbol: 'BTCUSDT', timeframe: '1h' })
+const liveTimeframes = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d']
+const showLiveConfirm = ref(false)
+const liveStarting = ref(false)
+const liveStopping = ref(false)
+const selectedStrategyName = computed(() =>
+  strategies.value.find((s) => s.id === liveForm.strategyId)?.name || '—')
 
 const form = reactive({
   symbol: 'BTCUSDT', side: 'BUY', type: 'LIMIT',
@@ -72,31 +92,56 @@ const accountValuation = computed(() => buildAccountValuation(balances.value, pr
   symbol: form.symbol,
 }))
 const positionRows = computed(() => accountValuation.value.assetRows || [])
+// 过滤掉重置时间点之前的币安成交 (币安服务器侧记录删不掉, 只能按 epoch 隐藏, 让曲线/收益从重置后重算)
+function afterReset(trades) {
+  const epoch = resetEpoch.value
+  if (!epoch) return trades
+  return trades.filter((t) => Number(t?.time) >= epoch)
+}
 const tradeDerivedAccountHistory = computed(() => buildAccountHistoryFromTrades(
   balances.value,
-  accountExchangeTrades.value,
+  afterReset(accountExchangeTrades.value),
   {
     symbol: form.symbol,
     prices: priceMap.value,
     now: lastWsUpdateAt.value ? new Date(lastWsUpdateAt.value).getTime() : Date.now(),
   }
 ))
+// 收益指标用: 成交级别 (稀疏), 避免把每个价格 tick 当成一笔交易
 const accountHistoryForChart = computed(() => (
   tradeDerivedAccountHistory.value.length ? tradeDerivedAccountHistory.value : accountHistory.value
 ))
 const accountPerformance = computed(() => buildAccountPerformance(accountHistoryForChart.value))
+// 图表用: 把"成交重建"(稀疏结构点) 与"本地快照"(随行情 tick 密集记录) 按时间合并去重,
+// 否则只有 2 个点会被前向填充成一条直线, 看不出资产随价格的波动。
+const accountEquityCurve = computed(() => {
+  const derived = tradeDerivedAccountHistory.value
+  const snaps = accountHistory.value
+  if (!derived.length) return snaps
+  if (!snaps.length) return derived
+  const seen = new Set()
+  const merged = []
+  for (const p of [...derived, ...snaps].sort((a, b) => Number(a.time) - Number(b.time))) {
+    const t = Number(p?.time)
+    const v = Number(p?.totalValue)
+    if (!(t > 0 && v > 0) || seen.has(t)) continue
+    seen.add(t)
+    merged.push(p)
+  }
+  return merged.slice(-480)
+})
 const accountHistorySource = computed(() => (
   tradeDerivedAccountHistory.value.length ? '从全账户成交重建' : '从打开页面记录'
 ))
 const accountHistoryCoverage = computed(() => {
-  const parts = [`${accountHistoryForChart.value.length} 点`]
+  const parts = [`${accountEquityCurve.value.length} 点`]
   if (accountExchangeTradeSymbols.value.length) parts.push(`${accountExchangeTradeSymbols.value.length} 币对`)
   if (accountExchangeTradesLoading.value) parts.push('扫描中')
   return parts.join(' · ')
 })
 const tradeMarkers = computed(() => tradeAnalytics.value.markersDesc.slice(0, 10))
 const chartTradeMarkers = computed(() => tradeAnalytics.value.markers)
-const exchangeOrderRows = computed(() => groupExchangeTradesByOrder(exchangeTrades.value))
+const exchangeOrderRows = computed(() => groupExchangeTradesByOrder(afterReset(exchangeTrades.value)))
 const exchangeFillCount = computed(() => exchangeOrderRows.value.reduce((sum, order) => sum + order.fillCount, 0))
 const currentSymbolTrades = computed(() => tradeAnalytics.value.rowsDesc)
 
@@ -192,6 +237,22 @@ function loadAccountHistory() {
 function saveAccountHistory() {
   try {
     localStorage.setItem(ACCOUNT_HISTORY_KEY, JSON.stringify(accountHistory.value.slice(-240)))
+  } catch {}
+}
+
+function loadResetEpoch() {
+  try {
+    const v = Number(localStorage.getItem(RESET_EPOCH_KEY))
+    return Number.isFinite(v) && v > 0 ? v : 0
+  } catch {
+    return 0
+  }
+}
+
+function saveResetEpoch() {
+  try {
+    if (resetEpoch.value > 0) localStorage.setItem(RESET_EPOCH_KEY, String(resetEpoch.value))
+    else localStorage.removeItem(RESET_EPOCH_KEY)
   } catch {}
 }
 
@@ -334,7 +395,7 @@ function syncChartTradeMarkers() {
 
 function syncChartAccountEquityIndicator() {
   try {
-    const result = syncAccountEquityIndicator(chart, accountHistoryForChart.value, chartTradeMarkers.value)
+    const result = syncAccountEquityIndicator(chart, accountEquityCurve.value, chartTradeMarkers.value)
     accountEquityIndicatorStatus.value = result.ok
       ? { ok: true, count: result.count || 0, markerCount: result.markerCount || 0, reason: '' }
       : { ok: false, count: 0, markerCount: 0, reason: result.reason || 'unknown' }
@@ -351,7 +412,7 @@ function renderAccountChart() {
     accountChart = echarts.init(el, null, { renderer: 'canvas' })
   }
 
-  const data = accountHistoryForChart.value.map((row) => [row.time, row.totalValue])
+  const data = accountEquityCurve.value.map((row) => [row.time, row.totalValue])
   accountChart.setOption({
     animation: false,
     grid: { left: 8, right: 12, top: 12, bottom: 20, containLabel: true },
@@ -490,6 +551,7 @@ async function loadAll() {
   const jobs = [
     getTradeStatus().then((s) => { status.value = s.data }).catch(() => {}),
     loadTrades(),
+    loadLiveStatus(true),
   ]
   if (connected.value) jobs.push(loadAccount(), loadOpenOrders(), loadExchangeTrades(), loadAccountExchangeTrades(true))
   await Promise.allSettled(jobs)
@@ -583,7 +645,7 @@ async function refreshDynamic() {
   if (polling || document.hidden || !connected.value) return
   polling = true
   try {
-    await Promise.allSettled([loadOpenOrders(true), loadAccount(true), loadTrades(), loadExchangeTrades()])
+    await Promise.allSettled([loadOpenOrders(true), loadAccount(true), loadTrades(), loadExchangeTrades(), loadLiveStatus(true)])
     lastDataRefreshAt.value = new Date()
   }
   finally { polling = false }
@@ -629,6 +691,133 @@ async function doCancel(o) {
       lastDataRefreshAt.value = new Date()
     } else { flash('error', r.data?.error || '撤单失败') }
   } catch (e) { flash('error', e.message) }
+}
+
+// ---- 沙盒重置: 一键平仓 + 清本地 ----
+// 弹窗预览: 将撤的挂单数 / 将卖出的持仓 / 预估卖不掉的 dust (后端按 minNotional 最终判定)
+const resetPreview = computed(() => {
+  const positions = positionRows.value.filter(
+    (r) => !STABLE_ASSETS.has(String(r.asset || '').toUpperCase()) && Number(r.total) > 0
+  )
+  const dust = positions.filter((r) => r.priced && r.value > 0 && r.value < DUST_USDT)
+  const sellable = positions.filter((r) => !(r.priced && r.value > 0 && r.value < DUST_USDT))
+  return { orders: openOrders.value.length, sellable, dust }
+})
+
+function openResetModal() {
+  if (!connected.value) return flash('error', '未连接沙盒账户, 无法重置')
+  resetReport.value = null
+  showResetModal.value = true
+}
+
+function closeResetModal() {
+  if (resetting.value) return
+  showResetModal.value = false
+}
+
+async function confirmReset() {
+  if (resetting.value) return
+  resetting.value = true
+  try {
+    const r = await resetSandbox()
+    const rep = r.data || {}
+    resetReport.value = rep
+
+    // 设置重置时间点 (优先用服务器对齐时间, 略加缓冲, 确保平仓那几笔旧成交被过滤)
+    resetEpoch.value = Math.max(Number(rep.reset_at) || 0, Date.now()) + 1000
+    saveResetEpoch()
+
+    // 清本地派生状态: 审计记录 / localStorage 资产快照 / 已加载的币安成交
+    localTrades.value = []
+    accountHistory.value = []
+    saveAccountHistory()
+    exchangeTrades.value = []
+    accountExchangeTrades.value = []
+    accountExchangeTradeSymbols.value = []
+    accountExchangeTradesLoaded.value = false
+
+    const soldN = (rep.sold || []).length
+    const dustN = (rep.skipped_dust || []).length
+    const failN = (rep.failed || []).length
+    flash(failN ? 'error' : 'success',
+      `沙盒重置完成: 撤单 ${rep.cancelled || 0} · 卖出 ${soldN} · dust ${dustN}${failN ? ` · 失败 ${failN}` : ''}`)
+
+    await loadAll()
+  } catch (e) {
+    flash('error', `重置失败: ${e.message}`)
+    resetReport.value = { ok: false, failed: [{ step: 'request', error: e.message }] }
+  } finally {
+    resetting.value = false
+  }
+}
+
+// ---- 策略实盘: 加载 / 启动 / 停止 ----
+async function loadStrategies() {
+  try {
+    const r = await getStrategies()
+    strategies.value = r.data?.strategies || []
+    if (!liveForm.strategyId && strategies.value.length) liveForm.strategyId = strategies.value[0].id
+  } catch (e) { /* 列表失败不阻断页面 */ }
+}
+
+async function loadLiveStatus(silent = false) {
+  try {
+    const r = await getLiveStatus()
+    if (r.data) live.value = r.data
+  } catch (e) { if (!silent) flash('error', `实盘状态加载失败: ${e.message}`) }
+}
+
+function openLiveConfirm() {
+  if (!connected.value) return flash('error', '未连接沙盒账户, 无法启动')
+  if (!liveForm.strategyId) return flash('error', '请先选择策略')
+  showLiveConfirm.value = true
+}
+
+async function confirmLiveStart() {
+  if (liveStarting.value) return
+  liveStarting.value = true
+  try {
+    const r = await startLive({
+      strategy_id: liveForm.strategyId,
+      symbol: liveForm.symbol,
+      timeframe: liveForm.timeframe,
+      params: {},
+    })
+    if (r.data?.ok) {
+      live.value = r.data.status || live.value
+      showLiveConfirm.value = false
+      flash('success', `已启动: ${selectedStrategyName.value} · ${liveForm.symbol} · ${liveForm.timeframe}`)
+    } else {
+      flash('error', r.data?.error || '启动失败')
+    }
+  } catch (e) {
+    flash('error', `启动失败: ${e.message}`)
+  } finally {
+    liveStarting.value = false
+  }
+}
+
+async function stopLiveRun() {
+  if (liveStopping.value) return
+  liveStopping.value = true
+  try {
+    const r = await stopLive(false)
+    if (r.data?.ok) {
+      live.value = r.data.status || { running: false, logs: [] }
+      flash('success', '已停止策略实盘')
+    } else {
+      flash('error', r.data?.error || '停止失败')
+    }
+  } catch (e) {
+    flash('error', `停止失败: ${e.message}`)
+  } finally {
+    liveStopping.value = false
+  }
+}
+
+function pctText(v) {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? `${(n * 100).toFixed(1)}%` : '关'
 }
 
 function fmt(n, d = 4) { const v = Number(n); return Number.isFinite(v) ? v.toFixed(d) : '-' }
@@ -694,7 +883,7 @@ watch(accountHistory, () => {
   nextTick(renderAccountChart)
 }, { deep: true })
 
-watch(accountHistoryForChart, () => {
+watch(accountEquityCurve, () => {
   nextTick(renderAccountChart)
   scheduleAccountEquityIndicatorSync()
 }, { deep: true })
@@ -708,6 +897,8 @@ onMounted(async () => {
     const r = await listSymbols(false)
     symbols.value = r.data?.symbols || []
   } catch {}
+  liveForm.symbol = form.symbol
+  loadStrategies()
   await nextTick()
   initChart()
   renderAccountChart()
@@ -753,6 +944,9 @@ onBeforeUnmount(() => {
           <span class="time-chip ws">WS {{ clock(lastWsUpdateAt) }}</span>
           <span class="time-chip">刷新 {{ clock(lastDataRefreshAt) }}</span>
         </div>
+        <button class="btn ghost danger" @click="openResetModal"
+                :disabled="loading || resetting || !connected"
+                title="撤所有挂单 + 市价平仓换回 USDT + 清空本地记录">沙盒重置</button>
         <button class="btn ghost" @click="loadAll" :disabled="loading">刷新</button>
       </div>
     </div>
@@ -912,7 +1106,7 @@ onBeforeUnmount(() => {
               <small>{{ accountHistorySource }} · {{ accountHistoryCoverage }}</small>
             </div>
             <div v-if="accountExchangeTradesError" class="account-chart-warn">{{ accountExchangeTradesError }}</div>
-            <div v-if="accountHistoryForChart.length > 1" ref="accountChartEl" class="account-chart"></div>
+            <div v-if="accountEquityCurve.length > 1" ref="accountChartEl" class="account-chart"></div>
             <div v-else class="account-chart-empty">等待更多账户或行情刷新后绘制曲线</div>
           </div>
         </div>
@@ -954,6 +1148,64 @@ onBeforeUnmount(() => {
           </div>
           <div v-else class="position-empty">暂无持仓</div>
         </aside>
+      </div>
+    </div>
+
+    <!-- 策略实盘 -->
+    <div class="card live-panel">
+      <div class="section-head">
+        <h3>
+          策略实盘
+          <span class="live-badge" :class="live.running ? 'on' : 'off'">{{ live.running ? '运行中' : '未运行' }}</span>
+        </h3>
+        <span v-if="live.running">{{ live.symbol }} · {{ live.timeframe }} · 刷新 {{ clock(lastDataRefreshAt) }}</span>
+      </div>
+
+      <!-- 未运行: 配置 + 启动 -->
+      <div v-if="!live.running" class="live-config">
+        <label>策略
+          <select v-model.number="liveForm.strategyId">
+            <option :value="null" disabled>选择策略…</option>
+            <option v-for="s in strategies" :key="s.id" :value="s.id">
+              {{ s.name }}{{ s.is_builtin ? '' : ' · 自定义' }}
+            </option>
+          </select>
+        </label>
+        <label>标的
+          <select v-model="liveForm.symbol">
+            <option v-for="s in symbols" :key="s.symbol" :value="s.symbol">{{ s.symbol }}</option>
+          </select>
+        </label>
+        <label>周期
+          <select v-model="liveForm.timeframe">
+            <option v-for="tf in liveTimeframes" :key="tf" :value="tf">{{ tf }}</option>
+          </select>
+        </label>
+        <button class="btn submit buy live-start" :disabled="!connected || !liveForm.strategyId || liveStarting"
+                @click="openLiveConfirm">{{ liveStarting ? '启动中…' : '启动实盘' }}</button>
+        <p v-if="!connected" class="hint live-hint">连接沙盒账户后可启动</p>
+      </div>
+
+      <!-- 运行中: 状态 + 日志 + 停止 -->
+      <div v-else class="live-running">
+        <div class="live-grid">
+          <div class="live-item"><span>策略</span><b>{{ live.strategy_name }}</b></div>
+          <div class="live-item"><span>持仓</span><b :class="live.position === 'long' ? 'pos' : ''">{{ live.position === 'long' ? '持有' : '空仓' }}</b></div>
+          <div class="live-item"><span>最新信号</span><b>{{ live.last_signal == null ? '-' : (live.last_signal ? '持有' : '空仓') }}</b></div>
+          <div class="live-item"><span>持仓均价</span><b>{{ live.entry_price ? fmt(live.entry_price, 2) : '-' }}</b></div>
+          <div class="live-item"><span>现价</span><b>{{ live.last_price ? fmt(live.last_price, 2) : '-' }}</b></div>
+          <div class="live-item"><span>止损 / 止盈</span><b>{{ pctText(live.stop_loss) }} / {{ pctText(live.take_profit) }}</b></div>
+        </div>
+        <div class="live-actions">
+          <span class="live-last">{{ live.last_action || '等待信号…' }}</span>
+          <button class="btn ghost danger" :disabled="liveStopping" @click="stopLiveRun">{{ liveStopping ? '停止中…' : '停止' }}</button>
+        </div>
+        <div v-if="live.error" class="live-error">⚠️ {{ live.error }}</div>
+        <div v-if="(live.logs || []).length" class="live-log">
+          <div v-for="(l, i) in [...(live.logs || [])].reverse()" :key="i" class="live-log-row">
+            <span>{{ shortTs(l.time) }}</span><span>{{ l.msg }}</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1056,6 +1308,101 @@ onBeforeUnmount(() => {
               </template>
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 沙盒重置: 确认预览 / 执行战报 -->
+    <div v-if="showResetModal" class="reset-mask" @click.self="closeResetModal">
+      <div class="reset-modal">
+        <!-- 阶段一: 确认预览 -->
+        <template v-if="!resetReport">
+          <h3>沙盒重置</h3>
+          <p class="reset-sub">将对当前 Binance 沙盒账户执行以下不可逆操作:</p>
+          <ul class="reset-plan">
+            <li>撤销全部挂单 · <b>{{ resetPreview.orders }}</b> 个</li>
+            <li>市价卖出非 USDT 持仓换回 USDT · <b>{{ resetPreview.sellable.length }}</b> 项</li>
+            <li>清空本地交易记录与界面统计</li>
+          </ul>
+          <div v-if="resetPreview.sellable.length" class="reset-list">
+            <div v-for="r in resetPreview.sellable" :key="r.asset" class="reset-row">
+              <span>{{ r.asset }}</span>
+              <span>{{ fmt(r.total, assetQtyDigits(r.asset)) }}</span>
+              <span>{{ r.priced ? '≈ ' + fmt(r.value, 2) + ' USDT' : '未估值' }}</span>
+            </div>
+          </div>
+          <div v-else class="reset-empty">当前无可平仓持仓</div>
+
+          <div v-if="resetPreview.dust.length" class="reset-dust">
+            预计卖不掉的 dust（{{ resetPreview.dust.length }} 项, 市值过低）:
+            {{ resetPreview.dust.map(d => d.asset).join('、') }}
+          </div>
+
+          <ul class="reset-warn">
+            <li>真实不可逆的 testnet 成交, 会产生手续费</li>
+            <li>金额不会回到初始本金（取决于卖出所得）</li>
+            <li>Binance 服务器侧成交记录删不掉, 仅本地记录与界面会重置</li>
+          </ul>
+
+          <div class="reset-actions">
+            <button class="btn ghost" @click="closeResetModal" :disabled="resetting">取消</button>
+            <button class="btn submit sell" @click="confirmReset" :disabled="resetting">
+              {{ resetting ? '执行中…' : '确定重置' }}
+            </button>
+          </div>
+        </template>
+
+        <!-- 阶段二: 执行战报 -->
+        <template v-else>
+          <h3>重置完成</h3>
+          <div class="reset-report">
+            <div class="rr-item"><span>撤销挂单</span><b>{{ resetReport.cancelled || 0 }}</b></div>
+            <div class="rr-item"><span>成功卖出</span><b>{{ (resetReport.sold || []).length }}</b></div>
+            <div class="rr-item"><span>跳过 dust</span><b>{{ (resetReport.skipped_dust || []).length }}</b></div>
+            <div class="rr-item"><span>失败</span><b :class="{ neg: (resetReport.failed || []).length }">{{ (resetReport.failed || []).length }}</b></div>
+            <div class="rr-item"><span>清本地</span><b>{{ resetReport.local_cleared || 0 }}</b></div>
+          </div>
+          <div v-if="(resetReport.sold || []).length" class="reset-list">
+            <div v-for="s in resetReport.sold" :key="s.symbol" class="reset-row">
+              <span>卖出 {{ s.asset }}</span>
+              <span>{{ fmt(s.qty, 6) }}</span>
+              <span class="pos">+{{ fmt(s.quote, 2) }} USDT</span>
+            </div>
+          </div>
+          <div v-if="(resetReport.skipped_dust || []).length" class="reset-dust">
+            残留 dust: {{ resetReport.skipped_dust.map(d => d.asset).join('、') }}（市值低于币安最小名义额, 无法市价卖出）
+          </div>
+          <div v-if="(resetReport.failed || []).length" class="reset-fail">
+            <div v-for="(f, i) in resetReport.failed" :key="i">✗ {{ f.step }} {{ f.symbol || '' }}: {{ f.error }}</div>
+          </div>
+          <div class="reset-actions">
+            <button class="btn submit" @click="closeResetModal">关闭</button>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- 启动策略实盘确认 -->
+    <div v-if="showLiveConfirm" class="reset-mask" @click.self="showLiveConfirm = false">
+      <div class="reset-modal">
+        <h3>启动策略实盘</h3>
+        <p class="reset-sub">将在 Binance 沙盒账户上按策略信号自动下真实市价单:</p>
+        <ul class="reset-plan">
+          <li>策略 · <b>{{ selectedStrategyName }}</b></li>
+          <li>标的 / 周期 · <b>{{ liveForm.symbol }} / {{ liveForm.timeframe }}</b></li>
+          <li>每根 K 线收盘评估信号, 持有 ↔ 空仓 自动切换</li>
+          <li>止损止盈按策略 DSL 执行 (仅运行期间生效)</li>
+        </ul>
+        <ul class="reset-warn">
+          <li>真实不可逆的 testnet 成交, 会产生手续费</li>
+          <li>行情价 (公开 API) 与成交价 (demo) 可能有偏差</li>
+          <li>同一时间只跑一个策略; 后端重启不自动续跑</li>
+        </ul>
+        <div class="reset-actions">
+          <button class="btn ghost" @click="showLiveConfirm = false" :disabled="liveStarting">取消</button>
+          <button class="btn submit buy" @click="confirmLiveStart" :disabled="liveStarting">
+            {{ liveStarting ? '启动中…' : '确定启动' }}
+          </button>
         </div>
       </div>
     </div>
@@ -1383,7 +1730,98 @@ onBeforeUnmount(() => {
 .btn.submit { padding: 11px 0; font-weight: 700; font-size: 14px; border: none; }
 .btn.submit.buy { background: var(--green); color: #08130c; }
 .btn.submit.sell { background: var(--red); color: #1a0608; }
+.btn.ghost.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+.btn.ghost.danger:hover:not(:disabled) { border-color: var(--red); }
 .hint { font-size: 12px; color: var(--text-muted); }
+
+/* 沙盒重置弹窗 */
+.reset-mask {
+  position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px); padding: 20px;
+}
+.reset-modal {
+  width: 100%; max-width: 460px; max-height: 86vh; overflow-y: auto;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px 22px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+.reset-modal h3 { margin: 0 0 10px; font-size: 17px; }
+.reset-sub { margin: 0 0 8px; font-size: 13px; color: var(--text-secondary); }
+.reset-plan { margin: 0 0 12px; padding-left: 18px; font-size: 13px; line-height: 1.9; }
+.reset-plan b { color: var(--yellow); }
+.reset-list {
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 12px;
+  max-height: 200px; overflow-y: auto;
+}
+.reset-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 12px;
+  padding: 7px 12px; font-family: 'Consolas', monospace; font-size: 12.5px;
+  border-bottom: 1px solid var(--border);
+}
+.reset-row:last-child { border-bottom: none; }
+.reset-row .pos { color: var(--green); }
+.reset-empty { font-size: 13px; color: var(--text-muted); margin-bottom: 12px; }
+.reset-dust {
+  font-size: 12px; color: var(--yellow); background: color-mix(in srgb, var(--yellow) 10%, transparent);
+  border-radius: 6px; padding: 8px 10px; margin-bottom: 12px;
+}
+.reset-warn {
+  margin: 0 0 16px; padding: 10px 10px 10px 26px; list-style: '⚠️ '; font-size: 12px; line-height: 1.8;
+  color: var(--text-secondary); background: color-mix(in srgb, var(--red) 8%, transparent); border-radius: 8px;
+}
+.reset-fail { font-size: 12px; color: var(--red); margin-bottom: 12px; line-height: 1.7; word-break: break-all; }
+.reset-report {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 14px;
+}
+.rr-item {
+  display: flex; flex-direction: column; gap: 4px; align-items: center;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 4px;
+}
+.rr-item span { font-size: 11px; color: var(--text-muted); }
+.rr-item b { font-size: 18px; }
+.rr-item b.neg { color: var(--red); }
+.reset-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.reset-actions .btn.submit { padding: 9px 20px; }
+@media (max-width: 560px) {
+  .reset-report { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* 策略实盘 */
+.live-badge {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: 8px; vertical-align: middle;
+}
+.live-badge.on { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
+.live-badge.off { background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); }
+.live-config { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.live-config label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.live-config select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 8px 10px; border-radius: 6px; font-size: 13px; min-width: 150px;
+}
+.live-start { padding: 9px 22px; }
+.live-hint { width: 100%; margin: 0; }
+.live-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 12px; }
+.live-item {
+  display: flex; flex-direction: column; gap: 4px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+}
+.live-item span { font-size: 11px; color: var(--text-muted); }
+.live-item b { font-size: 14px; font-family: 'Consolas', monospace; }
+.live-item b.pos { color: var(--green); }
+.live-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.live-last { font-size: 13px; color: var(--text-secondary); }
+.live-error { font-size: 12px; color: var(--red); margin-bottom: 10px; }
+.live-log {
+  max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); padding: 6px 0;
+}
+.live-log-row {
+  display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 3px 12px;
+  font-family: 'Consolas', monospace; font-size: 12px; color: var(--text-secondary);
+}
+.live-log-row span:first-child { color: var(--text-muted); }
+@media (max-width: 760px) {
+  .live-grid { grid-template-columns: repeat(2, 1fr); }
+}
 
 /* 余额 */
 .balances { border-top: 1px solid var(--border); padding-top: 12px; }

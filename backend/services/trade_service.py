@@ -4,6 +4,7 @@ simulation 模式 -> 通过签名客户端连 demo-api.binance.com (沙盒账户
 所有真实下单同时在本地 Trade 表落一条审计记录。
 live (实盘) 模式本期不支持, 直接拒绝以杜绝误连。
 """
+import math
 from typing import Optional
 
 from backend.core import config as sys_config
@@ -12,9 +13,31 @@ from backend.core.logger import log
 from backend.data.demo_client import get_demo_client, DemoApiError
 from backend.storage import crud
 
+# 平仓时作为计价货币 / 不卖出的资产
+_QUOTE_ASSETS = {"USDT"}
+
 
 def _trading_cfg() -> dict:
     return sys_config.get("trading", {}) or {}
+
+
+def _decimals_of(step_str: Optional[str]) -> int:
+    s = str(step_str or "")
+    if "." in s:
+        return len(s.split(".")[1].rstrip("0"))
+    return 0
+
+
+def _floor_qty(value: float, step_str: Optional[str]) -> float:
+    """按交易对步进向下取整数量 (与前端 floorToStep 一致, 避免 -1013 精度错误)。"""
+    try:
+        step = float(step_str or 0)
+    except (TypeError, ValueError):
+        step = 0
+    if step <= 0:
+        return float(value)
+    n = math.floor((float(value) + 1e-12) / step) * step
+    return float(f"{n:.{_decimals_of(step_str)}f}")
 
 
 def _guard_simulation() -> Optional[dict]:
@@ -177,3 +200,125 @@ def list_trades(mode: str = None, limit: int = 100) -> list:
 def record_trade(mode: str, symbol: str, side: str, price: float,
                  amount: float, pnl: float = 0, note: str = "") -> int:
     return crud.insert_trade(mode, symbol, side, price, amount, pnl, note)
+
+
+# ---- 沙盒重置 (一键平仓 + 清本地) ----
+def reset_sandbox() -> dict:
+    """一键沙盒重置:
+    1) 撤销所有挂单; 2) 市价卖出所有非 USDT 持仓换回 USDT (dust 跳过);
+    3) 清空本地审计记录 (mode=simulation)。
+
+    返回执行报告。注意: 金额不会回到原始本金 (取决于卖出所得, 含手续费/盈亏);
+    低于最小名义额的 dust 与 Binance 服务器侧成交记录无法清除。
+    """
+    report = {
+        "ok": True, "connected": False, "cancelled": 0,
+        "sold": [], "skipped_dust": [], "failed": [],
+        "local_cleared": 0, "reset_at": None, "live_stopped": False,
+    }
+    # 若有策略实盘在跑, 先停掉, 否则它会和重置抢着下单 / 持仓状态错乱
+    try:
+        from backend.services.live_trader import get_live_trader
+        lt = get_live_trader()
+        if lt.running:
+            lt.stop()
+            report["live_stopped"] = True
+    except Exception as e:
+        log.warning(f"[trade] 重置前停止实盘运行器失败: {e}")
+    blocked = _guard_simulation()
+    if not blocked:
+        report["connected"] = True
+        client = get_demo_client()
+
+        # 1. 撤销所有挂单 (按 symbol 分组撤)
+        try:
+            opens = client.open_orders()
+            order_symbols = sorted({o.get("symbol") for o in opens if o.get("symbol")})
+            for sym in order_symbols:
+                try:
+                    res = client.cancel_open_orders(sym)
+                    report["cancelled"] += len(res) if isinstance(res, list) else 1
+                except DemoApiError as e:
+                    report["failed"].append({"step": "cancel", "symbol": sym, "error": str(e)})
+        except Exception as e:
+            log.warning(f"[trade] 重置撤单阶段失败: {e}")
+            report["failed"].append({"step": "cancel", "error": str(e)})
+
+        # 2. 重新拉余额 (撤单后锁定额已释放) → 市价卖出非 USDT 持仓
+        try:
+            balances = client.balances()
+        except Exception as e:
+            balances = []
+            report["failed"].append({"step": "balances", "error": str(e)})
+
+        for b in balances:
+            asset = (b.get("asset") or "").upper()
+            free = float(b.get("free") or 0)
+            if asset in _QUOTE_ASSETS or free <= 0:
+                continue
+            symbol = f"{asset}USDT"
+            try:
+                filt = client.symbol_filters(symbol)
+            except Exception as e:
+                report["skipped_dust"].append({
+                    "asset": asset, "free": free, "reason": f"无 USDT 交易对或规则不可用: {e}"})
+                continue
+
+            qty = _floor_qty(free, filt.get("market_step_str"))
+            price = 0.0
+            try:
+                price = client.ticker_price(symbol)
+            except Exception:
+                pass
+            notional = qty * price if price else 0.0
+            min_qty = filt.get("min_qty") or 0
+            min_notional = filt.get("min_notional") or 0
+
+            if qty <= 0 or (min_qty and qty < min_qty) or (min_notional and price and notional < min_notional):
+                report["skipped_dust"].append({
+                    "asset": asset, "free": free, "est_value": round(notional, 4),
+                    "reason": "低于最小可卖量 / 名义额 (dust)"})
+                continue
+
+            try:
+                res = client.place_order(symbol, "SELL", "MARKET", qty)
+                executed = float(res.get("executedQty") or qty)
+                quote = float(res.get("cummulativeQuoteQty") or 0)
+                report["sold"].append({
+                    "asset": asset, "symbol": symbol, "qty": executed,
+                    "quote": round(quote, 4), "order_id": res.get("orderId")})
+            except DemoApiError as e:
+                report["failed"].append({"step": "sell", "symbol": symbol, "error": str(e), "code": e.code})
+            except Exception as e:
+                report["failed"].append({"step": "sell", "symbol": symbol, "error": str(e)})
+
+        # 重置时间基准 (服务器对齐时间, 前端据此过滤旧成交让曲线/收益归零)
+        try:
+            report["reset_at"] = client.server_now_ms()
+        except Exception:
+            report["reset_at"] = None
+
+    # 3. 清空本地审计记录 (无论是否连接都执行)
+    try:
+        report["local_cleared"] = crud.clear_trades("simulation")
+    except Exception as e:
+        report["failed"].append({"step": "clear_local", "error": str(e)})
+
+    report["ok"] = not any(f.get("step") in ("balances", "clear_local") for f in report["failed"])
+    return report
+
+
+# ---- 策略实盘运行 (委托到 LiveTrader 单例; 延迟导入避免循环依赖) ----
+def live_status() -> dict:
+    from backend.services.live_trader import get_live_trader
+    return get_live_trader().status()
+
+
+def live_start(strategy_id: int, symbol: str, timeframe: str, params: dict = None) -> dict:
+    from backend.services.live_trader import get_live_trader
+    return get_live_trader().start(strategy_id, symbol, timeframe, params or {})
+
+
+def live_stop(flatten: bool = False) -> dict:
+    from backend.services.live_trader import get_live_trader
+    return get_live_trader().stop(flatten)
