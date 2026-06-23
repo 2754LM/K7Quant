@@ -438,6 +438,61 @@ signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND (adx(close, 14) > 25)
             "adx_threshold": {"label": "ADX 阈值", "type": "int", "default": 25, "min": 15, "max": 50, "unit": "阈值", "hint": "ADX 大于此值认为有趋势, 才发出信号"},
         },
     },
+    {
+        "name": "Martingale 网格",
+        "description": "Python 脚本: 跌 1% 翻倍加仓, 涨 0.5% 全平, 限制最大层数。有爆仓风险, 谨慎使用。",
+        "category": "martingale",
+        "code_type": "python",
+        "code": '''# Martingale 网格策略 (Python)
+# 跌 1% 翻倍加仓, 涨 0.5% 全部止盈; 限制最大层数
+# 风险提示: 极端行情可能爆仓, 实盘务必设置最大层数
+
+def init():
+    return {
+        "entry": 0,           # 上次加仓价
+        "qty": 0,             # 当前持仓 USDT 价值
+        "base_qty": 100,      # 基础仓 (USDT)
+        "grid_count": 0,      # 当前网格层数
+        "max_grid": 5,        # 最大层数
+        "drop_pct": 0.99,     # 跌幅阈值 (0.99 = 跌 1%)
+        "rise_pct": 1.005,    # 涨幅阈值 (1.005 = 涨 0.5%)
+    }
+
+def on_bar(state):
+    p = ctx.now()
+    if p <= 0:
+        return
+
+    # 首次建仓
+    if state["entry"] == 0:
+        state["entry"] = p
+        state["qty"] = state["base_qty"]
+        buy(state["qty"])
+        return
+
+    # 跌到阈值 → 翻倍加仓
+    if p < state["entry"] * state["drop_pct"] and state["grid_count"] < state["max_grid"]:
+        state["entry"] = p
+        state["qty"] *= 2
+        state["grid_count"] += 1
+        buy(state["qty"])
+        return
+
+    # 涨到阈值 → 全平 + 重置
+    if p > state["entry"] * state["rise_pct"]:
+        sell_all()
+        state["entry"] = 0
+        state["qty"] = state["base_qty"]
+        state["grid_count"] = 0
+        return
+''',
+        "params_schema": {
+            "max_grid": {"label": "最大层数", "type": "int", "default": 5, "min": 1, "max": 20, "unit": "层", "hint": "最多加仓几次, 防止极端行情无限翻倍"},
+            "drop_pct": {"label": "跌幅阈值", "type": "float", "default": 0.99, "min": 0.90, "max": 0.999, "unit": "比率", "hint": "相对上次加仓价跌到此比率才加仓 (0.99 = 跌 1%)"},
+            "rise_pct": {"label": "止盈阈值", "type": "float", "default": 1.005, "min": 1.001, "max": 1.10, "unit": "比率", "hint": "相对上次加仓价涨到此比率就全平 (1.005 = 涨 0.5%)"},
+            "base_qty": {"label": "基础仓", "type": "float", "default": 100, "min": 10, "max": 10000, "unit": "USDT", "hint": "首次建仓 / 止盈重置后的基础下单金额"},
+        },
+    },
 ]
 
 

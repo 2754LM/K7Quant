@@ -40,6 +40,7 @@ class BacktestRequest(BaseModel):
 
 class CodeBacktestRequest(BaseModel):
     code: str
+    code_type: str = "dsl"
     symbol: str = "BTCUSDT"
     timeframe: Optional[str] = None
     params: dict = {}
@@ -112,11 +113,12 @@ def scan(req: BacktestRequest):
 def backtest_code(req: CodeBacktestRequest):
     """用临时代码跑回测 (调试/预览用)"""
     t0 = _time.time()
-    log.info(f"[API /backtest/code] symbol={req.symbol} tf={req.timeframe} code={len(req.code)} bytes")
+    log.info(f"[API /backtest/code] symbol={req.symbol} tf={req.timeframe} type={req.code_type} code={len(req.code)} bytes")
     try:
         result = backtest_service.backtest_with_code(
             symbol=req.symbol, code=req.code, params=req.params,
             timeframe=req.timeframe, start=req.start_date, end=req.end_date,
+            code_type=req.code_type,
         )
         if "error" in result:
             log.warning(f"[API /backtest/code] 失败: {result['error']}")

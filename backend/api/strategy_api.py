@@ -14,6 +14,7 @@ class CreateRequest(BaseModel):
     description: str = ""
     category: str = "custom"
     code: str
+    code_type: str = "dsl"
     params_schema: dict = {}
 
 
@@ -22,6 +23,11 @@ class UpdateRequest(CreateRequest):
 
 
 class ValidateRequest(BaseModel):
+    code: str
+    code_type: str = "dsl"
+
+
+class CompilePythonRequest(BaseModel):
     code: str
 
 
@@ -71,4 +77,10 @@ def delete(strategy_id: int):
 
 @router.post("/validate")
 def validate(req: ValidateRequest):
-    return strategy_service.validate_code(req.code)
+    return strategy_service.validate_code(req.code, code_type=req.code_type)
+
+
+@router.post("/compile-python")
+def compile_python(req: CompilePythonRequest):
+    """校验 + 测试编译 Python 策略, 返回 {ok, error, has_init, on_bar_args}"""
+    return strategy_service.validate_python(req.code)

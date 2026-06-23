@@ -3,6 +3,7 @@ import { ref, onMounted, computed, nextTick, inject } from 'vue'
 import {
   getStrategies, getStrategyTemplates, validateStrategyCode,
   createStrategy, deleteStrategy, updateStrategy, getDslDocs,
+  compilePython,
 } from '../api'
 
 import StrategyPicker from '../components/StrategyPicker.vue'
@@ -14,7 +15,7 @@ const reloadCfg = inject('reload')
 const strategies = ref([])
 const templates = ref({ builtin: [], blank_template: '' })
 const selectedId = ref(null)
-const editForm = ref({ name: '', description: '', category: 'custom', code: '', params_schema: {} })
+const editForm = ref({ name: '', description: '', category: 'custom', code: '', code_type: 'dsl', params_schema: {} })
 const isNew = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -28,6 +29,7 @@ const dslTabs = [
   { key: 'functions', label: '函数库' },
   { key: 'examples', label: '示例' },
   { key: 'tips', label: '技巧' },
+  { key: 'python', label: '🐍 Python 沙箱' },
 ]
 const dslTab = ref('overview')
 const funcCatFilter = ref('全部')
@@ -37,6 +39,40 @@ const functionCategories = computed(() => {
   return cats
 })
 let validationTimer = null
+
+// Python 沙箱 quick-ref (点击插入到光标)
+const pythonSnippets = {
+  init: `def init():
+    return {
+        "entry": 0,
+        "qty": 0,
+    }`,
+  on_bar: `def on_bar(state):
+    p = ctx.now()
+    if state["entry"] == 0:
+        state["entry"] = p
+        buy(100)
+        return`,
+  ctx_now: 'p = ctx.now()  # 当前 close',
+  ctx_ohlc: 'o, h, l, c = ctx.ohlc()  # 需要在 _Context 加',
+  ctx_df: 'ctx.df  # 完整 DataFrame (open/high/low/close/volume/amount/time)',
+  ctx_close: 'ctx.close  # 收盘价 Series (截至当前 bar)',
+  ctx_MA: 'ma7 = ctx.MA(7)  # 简单均线, 同 DSL 因子',
+  ctx_RSI: 'rsi14 = ctx.RSI(14)',
+  ctx_MACD: 'macd, sig, hist = ctx.MACD()  # 3 元组',
+  ctx_BOLL: 'upper, mid, lower = ctx.BOLL(20, 2.0)',
+  ctx_cross: 'ctx.cross_up(ma7, ma25)  # bool Series',
+  ctx_ref: 'ctx.ref(series, 1)  # 上一根的值',
+  ctx_bars: 'ctx.bars()  # 当前是第几根 (0-indexed)',
+  buy: 'buy(100)  # 买 100 USDT',
+  sell: 'sell(0.001)  # 卖 0.001 BTC',
+  sell_all: 'sell_all()  # 全平',
+  cash: 'cash()  # 当前现金',
+  equity: 'equity()  # 当前总权益',
+  position: 'position()  # 持仓 dict {qty, avg, value}',
+  np: 'np.array([1, 2, 3])  # numpy',
+  pd: 'pd.DataFrame({"a": [1, 2]})  # pandas',
+}
 
 const selectedStrategy = computed(() => strategies.value.find(s => s.id === selectedId.value))
 
@@ -63,7 +99,8 @@ function selectStrategy(id) {
   if (s) {
     editForm.value = {
       name: s.name, description: s.description, category: s.category,
-      code: s.code, params_schema: s.params_schema,
+      code: s.code, code_type: s.code_type || 'dsl',
+      params_schema: s.params_schema,
     }
     isNew.value = false
     validate()
@@ -77,6 +114,7 @@ function newStrategy() {
     name: '新策略',
     description: '',
     category: 'custom',
+    code_type: 'dsl',
     code: templates.value.blank_template || 'signal = MA(close, 7) > MA(close, 25)\n止损 = 0.05\n止盈 = 0.10\n仓位 = 1.0',
     params_schema: {},
   }
@@ -91,8 +129,46 @@ function useTemplate(t) {
     description: t.description,
     category: t.category,
     code: t.code,
+    code_type: t.code_type || 'dsl',
     params_schema: t.params_schema,
   }
+  validate()
+}
+
+function switchCodeType(type) {
+  if (editForm.value.code_type === type) return
+  if (type === 'python' && !editForm.value.code.includes('def on_bar')) {
+    // 切到 Python 但当前代码不像 Python, 给个默认模板
+    if (!confirm('切到 Python 模式会替换当前代码为默认 Python 模板, 继续?')) return
+    editForm.value.code = `# Python 策略: 自定义 on_bar + buy/sell
+# 跌 1% 翻倍加仓, 涨 0.5% 全平
+
+def init():
+    return {"entry": 0, "qty": 0, "base": 100, "grids": 0}
+
+def on_bar(state):
+    p = ctx.now()
+    if p <= 0:
+        return
+    if state["entry"] == 0:
+        state["entry"] = p
+        state["qty"] = state["base"]
+        buy(state["qty"])
+        return
+    if p < state["entry"] * 0.99 and state["grids"] < 5:
+        state["entry"] = p
+        state["qty"] *= 2
+        state["grids"] += 1
+        buy(state["qty"])
+        return
+    if p > state["entry"] * 1.005:
+        sell_all()
+        state["entry"] = 0
+        state["qty"] = state["base"]
+        state["grids"] = 0
+`
+  }
+  editForm.value.code_type = type
   validate()
 }
 
@@ -100,12 +176,32 @@ function validate() {
   if (validationTimer) clearTimeout(validationTimer)
   validationTimer = setTimeout(async () => {
     try {
-      const res = await validateStrategyCode(editForm.value.code)
+      const res = await validateStrategyCode(editForm.value.code, editForm.value.code_type)
       validation.value = res.data
     } catch (e) {
       validation.value = { ok: false, error: e.message }
     }
   }, 500)
+}
+
+function insertSnippet(snippet) {
+  const ta = document.querySelector('.code-area')
+  if (!ta) {
+    editForm.value.code += '\n' + snippet
+    validate()
+    return
+  }
+  const start = ta.selectionStart || 0
+  const end = ta.selectionEnd || 0
+  const before = editForm.value.code.slice(0, start)
+  const after = editForm.value.code.slice(end)
+  editForm.value.code = before + '\n' + snippet + '\n' + after
+  validate()
+  nextTick(() => {
+    ta.focus()
+    const pos = before.length + snippet.length + 2
+    ta.setSelectionRange(pos, pos)
+  })
 }
 
 async function save() {
@@ -184,10 +280,12 @@ onMounted(async () => {
       </div>
       <div class="strategy-list">
         <div v-for="s in strategies" :key="s.id"
-          :class="['strategy-item', { active: s.id === selectedId, builtin: s.is_builtin }]"
+          :class="['strategy-item', { active: s.id === selectedId, builtin: s.is_builtin, python: s.code_type === 'python' }]"
           @click="selectStrategy(s.id)">
-          <div class="name">{{ s.name }}
+          <div class="name">
+            {{ s.name }}
             <span v-if="s.is_builtin" class="badge-sm">预置</span>
+            <span v-if="s.code_type === 'python'" class="badge-sm py">PY</span>
           </div>
           <div class="desc">{{ s.description }}</div>
         </div>
@@ -230,17 +328,64 @@ onMounted(async () => {
           </div>
         </div>
         <div class="form-row">
+          <div class="form-group">
+            <label>代码类型</label>
+            <div class="code-type-tabs">
+              <button type="button" :class="{ active: editForm.code_type === 'dsl' }"
+                @click="switchCodeType('dsl')">DSL 单行表达式</button>
+              <button type="button" :class="{ active: editForm.code_type === 'python' }"
+                @click="switchCodeType('python')">🐍 Python 脚本</button>
+            </div>
+            <span class="param-hint">
+              <span v-if="editForm.code_type === 'dsl'">单行表达式, 适合大多数技术指标策略</span>
+              <span v-else>完整 Python, 可有状态/循环/加仓, 自带 33+ 因子</span>
+            </span>
+          </div>
+          <div class="form-group">
+            <label>分类</label>
+            <select v-model="editForm.category">
+              <option value="trend">趋势 (trend)</option>
+              <option value="mean_reversion">均值回归 (mean_reversion)</option>
+              <option value="momentum">动量 (momentum)</option>
+              <option value="breakout">突破 (breakout)</option>
+              <option value="volume">成交量 (volume)</option>
+              <option value="martingale">Martingale (martingale)</option>
+              <option value="custom">自定义 (custom)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
           <div class="form-group grow">
-            <label>策略代码 (DSL)</label>
-            <textarea v-model="editForm.code" @input="validate" rows="16"
-              class="code-area"></textarea>
-            <div class="hint">
+            <label>
+              策略代码
+              <span class="hint-muted">
+                ({{ editForm.code_type === 'python' ? 'Python: def init() + def on_bar(state)' : 'DSL: signal = 表达式' }})
+              </span>
+            </label>
+            <textarea v-model="editForm.code" @input="validate" rows="20"
+              class="code-area" spellcheck="false"></textarea>
+            <div class="hint" v-if="editForm.code_type === 'dsl'">
               signal = 表达式 (必需) | 止损/止盈/仓位/频率 (可选)
             </div>
+            <div class="hint" v-else>
+              必填 def on_bar(state); 可选 def init() 返回 state dict; 必填函数: buy/sell/sell_all/cash/equity/position
+            </div>
+          </div>
+          <div class="form-group python-snippets" v-if="editForm.code_type === 'python'">
+            <label>快速插入</label>
+            <div class="snippet-grid">
+              <button type="button" v-for="(code, key) in pythonSnippets" :key="key"
+                class="snippet-btn" @click="insertSnippet(code)">{{ key }}</button>
+            </div>
+            <span class="param-hint">点击按钮插入示例代码到光标位置</span>
           </div>
         </div>
         <div class="validation" v-if="validation">
-          <span v-if="validation.ok" class="ok">✓ 语法正确</span>
+          <span v-if="validation.ok" class="ok">
+            ✓ {{ editForm.code_type === 'python'
+                ? 'Python 编译通过' + (validation.has_init ? ' (含 init)' : '')
+                : '语法正确' }}
+          </span>
           <span v-else class="err">✗ {{ validation.error }}</span>
         </div>
         <div class="actions">
@@ -342,6 +487,109 @@ onMounted(async () => {
           <ul class="tips-list">
             <li v-for="t in dslDocs.tips" :key="t" :class="{ good: t.startsWith('✓'), bad: t.startsWith('✗') }">{{ t }}</li>
           </ul>
+        </div>
+
+        <!-- 🐍 Python 沙箱 -->
+        <div v-if="dslTab === 'python'" class="docs-pane">
+          <p class="overview">
+            Python 沙箱给最大自由度: 可以有状态、循环、动态仓位、自定义加仓逻辑。
+            <br>代码每根 K 线调用 <code>def on_bar(state)</code>, 通过 <code>ctx</code> 拿数据, 通过 <code>buy/sell/sell_all</code> 下单。
+          </p>
+
+          <h4>📦 必填结构</h4>
+          <pre class="ex-code">def init():
+    """可选, 返回 state dict (跨 bar 持久化)"""
+    return {"entry": 0, "qty": 0, "base": 100, "grids": 0}
+
+def on_bar(state):
+    """必填, 每根 K 线调用一次"""
+    p = ctx.now()        # 当前 bar 收盘价
+    if p &lt; state["entry"] * 0.99:
+        buy(state["qty"] * 2)   # 翻倍加仓</pre>
+
+          <h4>💹 交易 (直接调用, 不需要 return)</h4>
+          <table class="docs-table">
+            <thead><tr><th style="width: 30%">调用</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>buy(usdt)</code></td><td>买入 usdt 金额 (USDT计价, 不是币数)</td></tr>
+              <tr><td><code>sell(coin_qty)</code></td><td>卖出 coin_qty 币数</td></tr>
+              <tr><td><code>sell_all()</code></td><td>全平当前持仓</td></tr>
+              <tr><td><code>cash()</code></td><td>当前可用现金 (USDT)</td></tr>
+              <tr><td><code>equity()</code></td><td>当前总权益 = 现金 + 持仓价值</td></tr>
+              <tr><td><code>position()</code></td><td>返回 <code>{qty, avg, value}</code> 持仓字典</td></tr>
+            </tbody>
+          </table>
+
+          <h4>📊 ctx (数据上下文)</h4>
+          <table class="docs-table">
+            <thead><tr><th style="width: 40%">属性/方法</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>ctx.now()</code></td><td>当前 close (单值)</td></tr>
+              <tr><td><code>ctx.open() / high() / low() / volume() / amount()</code></td><td>当前 bar 的开/高/低/量/额</td></tr>
+              <tr><td><code>ctx.time()</code></td><td>当前 bar 时间字符串</td></tr>
+              <tr><td><code>ctx.bars()</code></td><td>当前是第几根 (0-indexed)</td></tr>
+              <tr><td><code>ctx.df</code></td><td>完整 DataFrame (open/high/low/close/volume/amount/time)</td></tr>
+              <tr><td><code>ctx.close / ctx.high / ctx.low / ...</code></td><td>截至当前 bar 的 Series</td></tr>
+              <tr><td><code>ctx.MA(n) / ctx.EMA(n) / ctx.RSI(n) / ctx.MACD() / ctx.BOLL(p, σ) / ...</code></td><td>33+ 因子, 同 DSL 调用方式</td></tr>
+              <tr><td><code>ctx.cross_up(a, b) / ctx.cross_down(a, b)</code></td><td>交叉判断, 返回 bool Series</td></tr>
+              <tr><td><code>ctx.ref(series, n)</code></td><td>引用 n 根前的值 (n=1 = 上一根)</td></tr>
+              <tr><td><code>ctx.bars_since(cond)</code></td><td>上次条件为 True 距今多少根</td></tr>
+              <tr><td><code>ctx.pct_change(n)</code></td><td>N 根涨幅</td></tr>
+              <tr><td><code>ctx.std / sma / ema / sum(series=None, n)</code></td><td>滚动统计 (series 默认 ctx.close)</td></tr>
+            </tbody>
+          </table>
+
+          <h4>🔧 沙箱 globals (预导入)</h4>
+          <p class="hint">
+            <code>pd</code> / <code>np</code> / <code>math</code> / <code>json</code> / <code>datetime</code> /
+            <code>collections</code> / <code>itertools</code> / <code>functools</code> 全部直接可用。
+            Python 内置也几乎全开 (除 open/exec/eval/getattr/setattr/import 等危险函数)。
+          </p>
+
+          <h4>🛡️ 安全机制</h4>
+          <ul class="tips-list">
+            <li class="bad">✗ 禁止 <code>import</code> / <code>from xxx import</code></li>
+            <li class="bad">✗ 禁止 <code>open / exec / eval / getattr / setattr / delattr / __import__</code></li>
+            <li class="bad">✗ 禁止 dunder 属性访问 (<code>__class__ / __globals__ / ...</code>)</li>
+            <li class="bad">✗ 禁止 <code>async / await / global / nonlocal</code></li>
+            <li class="good">✓ 单 bar 抛错自动跳过, 不中断回测</li>
+            <li class="good">✓ 错误信息会写入 <code>state["_last_error"]</code> 便于调试</li>
+          </ul>
+
+          <h4>📝 完整示例: Martingale 网格</h4>
+          <pre class="ex-code">def init():
+    return {
+        "entry": 0,           # 上次加仓价
+        "qty": 0,             # 当前持仓 USDT 价值
+        "base_qty": 100,      # 基础仓
+        "grid_count": 0,      # 当前网格层数
+        "max_grid": 5,        # 最大层数
+    }
+
+def on_bar(state):
+    p = ctx.now()
+    if p &lt;= 0:
+        return
+    # 首次建仓
+    if state["entry"] == 0:
+        state["entry"] = p
+        state["qty"] = state["base_qty"]
+        buy(state["qty"])
+        return
+    # 跌 1% 翻倍加仓 (限制层数)
+    if p &lt; state["entry"] * 0.99 and state["grid_count"] &lt; state["max_grid"]:
+        state["entry"] = p
+        state["qty"] *= 2
+        state["grid_count"] += 1
+        buy(state["qty"])
+        return
+    # 涨 0.5% 全平 + 重置
+    if p &gt; state["entry"] * 1.005:
+        sell_all()
+        state["entry"] = 0
+        state["qty"] = state["base_qty"]
+        state["grid_count"] = 0
+        return</pre>
         </div>
       </div>
     </div>
@@ -553,4 +801,57 @@ onMounted(async () => {
 }
 .tips-list li.good { border-left: 3px solid var(--green); }
 .tips-list li.bad { border-left: 3px solid var(--red); }
+
+/* ============ 代码类型切换 ============ */
+.code-type-tabs { display: flex; gap: 4px; }
+.code-type-tabs button {
+  flex: 1; background: var(--bg); border: 1px solid var(--border);
+  color: var(--text-secondary); padding: 6px 12px; border-radius: 6px;
+  font-size: 12px; cursor: pointer; transition: all 0.2s;
+}
+.code-type-tabs button.active {
+  background: rgba(240,185,11,0.15); border-color: var(--yellow);
+  color: var(--yellow); font-weight: 600;
+}
+.code-type-tabs button:hover:not(.active) { border-color: var(--yellow); }
+
+/* ============ Python 标识 ============ */
+.badge-sm.py {
+  background: linear-gradient(135deg, #3776ab, #ffd43b);
+  color: #000;
+  font-size: 9px;
+  font-weight: 700;
+}
+.strategy-item.python {
+  border-left: 3px solid #3776ab;
+}
+
+/* ============ Python 快速插入 ============ */
+.python-snippets { max-width: 220px; }
+.snippet-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.snippet-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: 'Consolas', monospace;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.snippet-btn:hover {
+  background: rgba(240,185,11,0.1);
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
 </style>

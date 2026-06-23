@@ -41,6 +41,11 @@ def _run_migrations():
         if "created_at" not in cols:
             conn.execute(text("ALTER TABLE factors ADD COLUMN created_at DATETIME"))
             log.info("[migrate] factors.created_at 已添加")
+        # strategies 表: 新增 code_type (dsl/python)
+        s_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(strategies)")).fetchall()}
+        if "code_type" not in s_cols:
+            conn.execute(text("ALTER TABLE strategies ADD COLUMN code_type VARCHAR(16) DEFAULT 'dsl'"))
+            log.info("[migrate] strategies.code_type 已添加")
 
 
 async def lifespan(app: FastAPI):

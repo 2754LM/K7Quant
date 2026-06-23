@@ -66,6 +66,7 @@ class Strategy(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     category: Mapped[str] = mapped_column(String(32), default="custom")
     code: Mapped[str] = mapped_column(Text, nullable=False)
+    code_type: Mapped[str] = mapped_column(String(16), default="dsl")  # dsl | python
     params_schema: Mapped[Optional[str]] = mapped_column(Text)   # JSON
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -78,6 +79,7 @@ class Strategy(Base):
             "description": self.description or "",
             "category": self.category,
             "code": self.code,
+            "code_type": self.code_type or "dsl",
             "params_schema": json.loads(self.params_schema) if self.params_schema else {},
             "is_builtin": bool(self.is_builtin),
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -322,10 +324,12 @@ def get_strategy(strategy_id: int) -> Optional[dict]:
 
 
 def create_strategy(name: str, description: str, category: str, code: str,
-                     params_schema: dict, is_builtin: int = 0) -> int:
+                     params_schema: dict, code_type: str = "dsl",
+                     is_builtin: int = 0) -> int:
     with transaction() as s:
         obj = Strategy(
             name=name, description=description, category=category, code=code,
+            code_type=code_type or "dsl",
             params_schema=json.dumps(params_schema or {}, ensure_ascii=False),
             is_builtin=bool(is_builtin),
         )
@@ -335,7 +339,8 @@ def create_strategy(name: str, description: str, category: str, code: str,
 
 
 def update_strategy(strategy_id: int, name: str = None, description: str = None,
-                     category: str = None, code: str = None, params_schema: dict = None):
+                     category: str = None, code: str = None, params_schema: dict = None,
+                     code_type: str = None):
     """部分更新: 传入 None 的字段保持原值"""
     with transaction() as s:
         obj = s.get(Strategy, strategy_id)
@@ -345,6 +350,7 @@ def update_strategy(strategy_id: int, name: str = None, description: str = None,
         if description is not None: obj.description = description
         if category is not None: obj.category = category
         if code is not None: obj.code = code
+        if code_type is not None: obj.code_type = code_type
         if params_schema is not None: obj.params_schema = json.dumps(params_schema, ensure_ascii=False)
 
 

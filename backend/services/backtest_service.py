@@ -12,6 +12,7 @@ from backend.core.logger import log
 from backend.data.access import get_kline, get_many
 from backend.backtest import Backtester, compute_metrics, plot_equity
 from backend.strategy import StrategyEngine
+from backend.strategy.sandbox import PythonStrategy
 from backend.services.helpers import df_dates, to_records, sanitize, safe
 
 
@@ -90,32 +91,48 @@ def backtest_single(symbol: str, strategy_id: int, params: dict,
         log.warning(f"[backtest_single] 策略不存在: id={strategy_id}")
         return {"error": f"策略 ID {strategy_id} 不存在"}
 
-    try:
-        signal_fn, rules = StrategyEngine.compile(strategy["code"], params)
-        signal = signal_fn(df)
-        # 把 signal 转成 position 0/1
-        if signal.min() < 0:
-            # 允许做空: -1/0/1
-            position = signal.clip(-1, 1).astype(int)
-        else:
-            position = (signal > 0).astype(int)
-
-        sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
-                               "position": position})
-    except Exception as e:
-        log.error(f"[backtest_single] 策略执行失败: {symbol} sid={strategy_id} err={e}")
-        return {"error": f"策略执行失败: {e}"}
-
-    bt = Backtester()
+    code_type = strategy.get("code_type", "dsl")
     leverage = float(params.get("leverage", 1))
-    position_size = rules.get("position_size", 1.0)
-    result = bt.run(sig_df, leverage=leverage, position_size=position_size,
-                    rebalance_bars=_rebalance_bars(rules))
+
+    if code_type == "python":
+        # Python 策略: 走沙箱 + 自管理仓位
+        try:
+            py = PythonStrategy(strategy["code"])
+            capital = float(params.get("capital") or
+                            float(sys_config.get("backtest.initial_capital", 10000)))
+            result = py.run(df, capital=capital)
+            # 适配 backtest 引擎的 equity 序列格式
+            result_df = _python_result_to_df(df, result, capital=capital)
+            rules = {"stop_loss": 0, "take_profit": 0, "position_size": 1.0,
+                     "rebalance_bars": 1, "mode": "python"}
+        except Exception as e:
+            log.error(f"[backtest_single] Python 策略执行失败: {symbol} sid={strategy_id} err={e}")
+            return {"error": f"Python 策略执行失败: {e}"}
+    else:
+        # DSL 策略: 走 signal/position 路径
+        try:
+            signal_fn, rules = StrategyEngine.compile(strategy["code"], params)
+            signal = signal_fn(df)
+            if signal.min() < 0:
+                position = signal.clip(-1, 1).astype(int)
+            else:
+                position = (signal > 0).astype(int)
+            sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
+                                   "position": position})
+            bt = Backtester()
+            result = bt.run(sig_df, leverage=leverage,
+                            position_size=rules.get("position_size", 1.0),
+                            rebalance_bars=_rebalance_bars(rules))
+            result_df = result
+        except Exception as e:
+            log.error(f"[backtest_single] 策略执行失败: {symbol} sid={strategy_id} err={e}")
+            return {"error": f"策略执行失败: {e}"}
+
     bench = _benchmark(start, end, timeframe)
-    metrics = compute_metrics(result, bench, timeframe)
+    metrics = compute_metrics(result_df, bench, timeframe)
 
     title = f"{strategy['name']} - {symbol} ({timeframe})"
-    chart_b64 = _save_chart(result, bench, title, f"bt_{strategy_id}_{symbol}_{timeframe}")
+    chart_b64 = _save_chart(result_df, bench, title, f"bt_{strategy_id}_{symbol}_{timeframe}")
 
     # 保存记录
     try:
@@ -123,63 +140,94 @@ def backtest_single(symbol: str, strategy_id: int, params: dict,
     except Exception as e:
         log.warning(f"保存回测记录失败: {e}")
 
-    log.info(f"[backtest_single] 完成: {symbol} ret={safe(metrics.get('total_return')):.4f} sharpe={safe(metrics.get('sharpe')):.2f}")
+    log.info(f"[backtest_single] 完成: {symbol} ({code_type}) ret={safe(metrics.get('total_return')):.4f} sharpe={safe(metrics.get('sharpe')):.2f}")
+
+    # Python 策略附 trades 给前端展示
+    extra = {}
+    if code_type == "python":
+        extra["trades"] = result["trades"]
+        extra["final_state"] = result["final_state"]
+        extra["equity_detail"] = result["equity_curve"]
 
     return {
         "title": title,
         "symbol": symbol, "strategy_id": strategy_id, "timeframe": timeframe,
+        "code_type": code_type,
         "metrics": sanitize(metrics),
-        "equity": to_records(result),
+        "equity": to_records(result_df),
         "benchmark": to_records(bench.assign(nav=bench["close"] / bench["close"].iloc[0]),
                                  ["date", "nav"]) if not bench.empty else [],
         "chart_base64": chart_b64,
         "rules": rules,
+        **extra,
     }
 
 
 def backtest_with_code(symbol: str, code: str, params: dict,
-                       timeframe: str = None, start: str = None, end: str = None) -> dict:
+                       timeframe: str = None, start: str = None, end: str = None,
+                       code_type: str = "dsl") -> dict:
     """用传入的策略代码临时跑 (不存 DB)"""
     timeframe = timeframe or sys_config.get("backtest.default_timeframe", "4h")
     start = start or sys_config.get("backtest.start_date", "20240101")
     end = end or _resolve_end()
+    leverage = float(params.get("leverage", 1))
 
     df = get_kline(symbol, timeframe, start, end)
     if df.empty:
         return {"error": f"无 {symbol} 数据"}
 
-    try:
-        signal_fn, rules = StrategyEngine.compile(code, params)
-        signal = signal_fn(df)
-        if signal.min() < 0:
-            position = signal.clip(-1, 1).astype(int)
-        else:
-            position = (signal > 0).astype(int)
-        sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
-                               "position": position})
-    except Exception as e:
-        return {"error": f"策略执行失败: {e}"}
+    if code_type == "python":
+        try:
+            py = PythonStrategy(code)
+            capital = float(params.get("capital") or
+                            float(sys_config.get("backtest.initial_capital", 10000)))
+            result = py.run(df, capital=capital)
+            result_df = _python_result_to_df(df, result, capital=capital)
+            rules = {"stop_loss": 0, "take_profit": 0, "position_size": 1.0,
+                     "rebalance_bars": 1, "mode": "python"}
+        except Exception as e:
+            return {"error": f"Python 策略执行失败: {e}"}
+    else:
+        try:
+            signal_fn, rules = StrategyEngine.compile(code, params)
+            signal = signal_fn(df)
+            if signal.min() < 0:
+                position = signal.clip(-1, 1).astype(int)
+            else:
+                position = (signal > 0).astype(int)
+            sig_df = pd.DataFrame({"date": df["date"].values, "close": df["close"].values,
+                                   "position": position})
+            bt = Backtester()
+            result_df = bt.run(sig_df, leverage=leverage,
+                               position_size=rules.get("position_size", 1.0),
+                               rebalance_bars=_rebalance_bars(rules))
+        except Exception as e:
+            return {"error": f"策略执行失败: {e}"}
 
-    bt = Backtester()
-    leverage = float(params.get("leverage", 1))
-    position_size = rules.get("position_size", 1.0)
-    result = bt.run(sig_df, leverage=leverage, position_size=position_size,
-                    rebalance_bars=_rebalance_bars(rules))
     bench = _benchmark(start, end, timeframe)
-    metrics = compute_metrics(result, bench, timeframe)
+    metrics = compute_metrics(result_df, bench, timeframe)
 
     title = f"自定义策略 - {symbol} ({timeframe})"
-    chart_b64 = _save_chart(result, bench, title, f"bt_custom_{symbol}_{timeframe}")
+    chart_b64 = _save_chart(result_df, bench, title, f"bt_custom_{symbol}_{timeframe}")
+
+    extra = {}
+    if code_type == "python":
+        extra["trades"] = result["trades"]
+        extra["final_state"] = result["final_state"]
+        extra["equity_detail"] = result["equity_curve"]
+        extra["code_type"] = "python"
 
     return {
         "title": title,
         "symbol": symbol, "timeframe": timeframe,
+        "code_type": code_type,
         "metrics": sanitize(metrics),
-        "equity": to_records(result),
+        "equity": to_records(result_df),
         "benchmark": to_records(bench.assign(nav=bench["close"] / bench["close"].iloc[0]),
                                  ["date", "nav"]) if not bench.empty else [],
         "chart_base64": chart_b64,
         "rules": rules,
+        **extra,
     }
 
 
@@ -187,25 +235,32 @@ def backtest_with_code(symbol: str, code: str, params: dict,
 
 def _backtest_one_symbol(sym: str, df: pd.DataFrame, code: str, params: dict,
                          timeframe: str, position_size: float, leverage: float,
-                         rebalance_bars: int) -> Optional[dict]:
+                         rebalance_bars: int, code_type: str = "dsl") -> Optional[dict]:
     """单币回测 (线程安全, 无副作用)。
     返回: {"symbol", "metrics": {...}, "equity": pd.Series(dtype=float)} 或 None(失败)
     """
     try:
-        signal_fn, rules = StrategyEngine.compile(code, params)
-        signal = signal_fn(df)
-        if hasattr(signal, "min") and signal.min() < 0:
-            position = signal.clip(-1, 1).astype(int)
+        if code_type == "python":
+            py = PythonStrategy(code)
+            capital = float(params.get("capital") or
+                            float(sys_config.get("backtest.initial_capital", 10000)))
+            result = py.run(df, capital=capital)
+            r = _python_result_to_df(df, result, capital=capital)
         else:
-            position = (signal > 0).astype(int)
-        sig_df = pd.DataFrame({
-            "date": df["date"].values,
-            "close": df["close"].values,
-            "position": position,
-        })
-        bt = Backtester()
-        r = bt.run(sig_df, leverage=leverage, position_size=position_size,
-                   rebalance_bars=rebalance_bars)
+            signal_fn, rules = StrategyEngine.compile(code, params)
+            signal = signal_fn(df)
+            if hasattr(signal, "min") and signal.min() < 0:
+                position = signal.clip(-1, 1).astype(int)
+            else:
+                position = (signal > 0).astype(int)
+            sig_df = pd.DataFrame({
+                "date": df["date"].values,
+                "close": df["close"].values,
+                "position": position,
+            })
+            bt = Backtester()
+            r = bt.run(sig_df, leverage=leverage, position_size=position_size,
+                       rebalance_bars=rebalance_bars)
         m = compute_metrics(r, timeframe=timeframe)
         return {
             "symbol": sym,
@@ -215,6 +270,23 @@ def _backtest_one_symbol(sym: str, df: pd.DataFrame, code: str, params: dict,
     except Exception as e:
         log.warning(f"[backtest_one] {sym} 失败: {e}")
         return None
+
+
+def _python_result_to_df(df: pd.DataFrame, result: dict, capital: float) -> pd.DataFrame:
+    """把 PythonStrategy.run() 的输出转成跟 Backtester 一致的 equity DataFrame,
+    让 compute_metrics 可以无缝处理。
+    """
+    eq = result["equity_curve"]
+    out = pd.DataFrame({
+        "date": [e["date"] for e in eq],
+        "close": [e["price"] for e in eq],
+        "equity": [e["equity"] for e in eq],
+    })
+    out["ret"] = out["equity"].pct_change().fillna(0)
+    out["strategy_ret"] = out["ret"]
+    out["position"] = 0
+    out["trade"] = 0
+    return out
 
 
 def scan_pool(strategy_id: int, symbols: list = None, weights: dict = None,
@@ -264,11 +336,12 @@ def scan_pool(strategy_id: int, symbols: list = None, weights: dict = None,
     # 并行回测 (每币种只跑一次, 同时拿到 metrics + equity)
     items = list(data.items())
     results = [None] * len(items)
+    code_type = strategy.get("code_type", "dsl")
     with ThreadPoolExecutor(max_workers=_BT_POOL_WORKERS) as ex:
         futures = {
             ex.submit(
                 _backtest_one_symbol, sym, df, strategy["code"], params, timeframe,
-                position_size, leverage, rebalance_bars,
+                position_size, leverage, rebalance_bars, code_type,
             ): i
             for i, (sym, df) in enumerate(items)
         }
@@ -342,12 +415,14 @@ def filter_symbols(params: dict) -> dict:
 
     strategy = None
     strategy_code = ""
+    strategy_code_type = "dsl"
     if strategy_id:
         from backend.storage import crud
         strategy = crud.get_strategy(strategy_id)
         if not strategy:
             return {"error": f"策略 ID {strategy_id} 不存在"}
         strategy_code = strategy["code"]
+        strategy_code_type = strategy.get("code_type", "dsl")
 
     items = list(data.items())
     results = []
@@ -372,6 +447,7 @@ def filter_symbols(params: dict) -> dict:
                 float(params.get("position_size", 1.0) or 1.0),
                 float(params.get("leverage", 1)),
                 _rebalance_bars({"rebalance_bars": sys_config.get("backtest.rebalance_bars", 1)}),
+                strategy_code_type,
             )
             if r is None:
                 return None
