@@ -612,14 +612,15 @@ function setDatePreset(p, preset) {
     <div class="panels-stack">
       <div v-for="(p, idx) in panels" :key="p.id" class="panel-card"
         :class="{ 'drag-over': dragOverPanelId === p.id, 'single': panels.length === 1 }"
-        draggable="true"
-        @dragstart="onDragStart($event, p)"
-        @dragend="onDragEnd($event)"
-        @dragover="onDragOver($event, p)"
+        @dragover.prevent="onDragOver($event, p)"
         @drop="onDrop($event, p)">
-        <!-- 拖动手柄 + 标题栏 -->
+        <!-- 拖动手柄 + 标题栏 (只有手柄 draggable, 不影响图表区域拖动缩放) -->
         <div class="panel-head">
-          <span class="drag-handle" title="拖动排序">⋮⋮</span>
+          <span class="drag-handle"
+            draggable="true"
+            @dragstart.stop="onDragStart($event, p)"
+            @dragend="onDragEnd($event)"
+            title="拖动排序">⋮⋮</span>
           <span class="panel-idx">#{{ idx + 1 }}</span>
           <span class="panel-actions-mini">
             <button class="mini-icon-btn" @click="duplicatePanel(p.id)" title="复制当前设置新增面板">📋</button>
