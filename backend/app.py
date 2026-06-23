@@ -1,14 +1,17 @@
 """FastAPI 应用入口"""
 import os
 import sys
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import time as _time
@@ -46,6 +49,12 @@ def _run_migrations():
         if "code_type" not in s_cols:
             conn.execute(text("ALTER TABLE strategies ADD COLUMN code_type VARCHAR(16) DEFAULT 'dsl'"))
             log.info("[migrate] strategies.code_type 已添加")
+        if "context_timeframes" not in s_cols:
+            conn.execute(text("ALTER TABLE strategies ADD COLUMN context_timeframes TEXT"))
+            log.info("[migrate] strategies.context_timeframes 已添加")
+        if "context_lookback" not in s_cols:
+            conn.execute(text("ALTER TABLE strategies ADD COLUMN context_lookback INTEGER DEFAULT 20"))
+            log.info("[migrate] strategies.context_lookback 已添加")
 
 
 async def lifespan(app: FastAPI):
@@ -104,6 +113,47 @@ async def log_requests(request: Request, call_next):
     if request.url.path.startswith("/api"):
         log.info(f"[HTTP] {request.method} {request.url.path} → {response.status_code} ({ms:.0f}ms)")
     return response
+
+
+# ============ 全局异常处理: 任何未捕获错误都进日志 + 返回结构化 JSON ============
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """兜底异常处理: 任何没被 endpoint 捕获的异常都进日志, 前端拿到结构化错误"""
+    tb = traceback.format_exc()
+    log.error(f"[UNCAUGHT] {request.method} {request.url.path} → {type(exc).__name__}: {exc}\n{tb}")
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error": f"{type(exc).__name__}: {exc}",
+            "type": type(exc).__name__,
+            "path": request.url.path,
+        },
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """请求体校验失败: 把 Pydantic 错误转成中文友好消息"""
+    errs = exc.errors()
+    # 取第一个错误作为主消息
+    if errs:
+        first = errs[0]
+        loc = ".".join(str(x) for x in first.get("loc", []))
+        msg = first.get("msg", "校验失败")
+        typ = first.get("type", "")
+        log.warning(f"[VALIDATION] {request.method} {request.url.path} → "
+                    f"loc={loc} type={typ} msg={msg}")
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": f"参数校验失败: {msg} ({loc})" if errs else "参数校验失败",
+            "type": "validation_error",
+            "details": [{"loc": e.get("loc"), "msg": e.get("msg"), "type": e.get("type")}
+                        for e in errs],
+            "path": request.url.path,
+        },
+    )
 
 
 # 注册路由

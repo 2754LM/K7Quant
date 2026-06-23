@@ -15,7 +15,35 @@ const reloadCfg = inject('reload')
 const strategies = ref([])
 const templates = ref({ builtin: [], blank_template: '' })
 const selectedId = ref(null)
-const editForm = ref({ name: '', description: '', category: 'custom', code: '', code_type: 'dsl', params_schema: {} })
+const editForm = ref({ name: '', description: '', category: 'custom', code: '', code_type: 'dsl', params_schema: {}, context_timeframes: [], context_lookback: 20 })
+
+// 可选的 timeframe 列表 (跟系统保持一致)
+const TIMEFRAME_OPTIONS = ['1m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w']
+
+// 上下文变量名预览 (DSL 模式)
+const ctxVarPreview = computed(() => {
+  if (!editForm.value.context_timeframes?.length) return []
+  const cols = ['close', 'open', 'high', 'low', 'volume']
+  const stats = ['ma', 'max', 'min', 'std', 'sum']
+  const n = editForm.value.context_lookback || 20
+  const out = []
+  for (const tf of editForm.value.context_timeframes) {
+    const tfn = tf.replace('/', '_')
+    for (const c of cols) out.push(`ctx_${tfn}_${c}`)
+    for (const s of stats) out.push(`ctx_${tfn}_${s}${n}`)
+  }
+  return out
+})
+
+function toggleContextTf(tf) {
+  const list = editForm.value.context_timeframes || []
+  if (list.includes(tf)) {
+    editForm.value.context_timeframes = list.filter(t => t !== tf)
+  } else {
+    editForm.value.context_timeframes = [...list, tf]
+  }
+  validate()
+}
 const isNew = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -72,6 +100,11 @@ const pythonSnippets = {
   position: 'position()  # 持仓 dict {qty, avg, value}',
   np: 'np.array([1, 2, 3])  # numpy',
   pd: 'pd.DataFrame({"a": [1, 2]})  # pandas',
+  ctx_klines: 'df = ctx.klines("15m", n=20)  # 拉取 15m 最近 20 根 (按需缓存)',
+  ctx_series: 's = ctx.series("1h", "close", n=50)  # 拿 1h close Series',
+  ctx_factor: 'rsi_15m = ctx.factor("RSI", "15m", n=20)  # 在 15m 上跑 RSI',
+  ctx_now_tf: 'last_15m = ctx.now_tf("15m")  # 最新 15m close (单值)',
+  ctx_ref_tf: 'prev_15m = ctx.ref_tf("15m", "close", 1)  # 上一根 15m close',
 }
 
 const selectedStrategy = computed(() => strategies.value.find(s => s.id === selectedId.value))
@@ -101,6 +134,8 @@ function selectStrategy(id) {
       name: s.name, description: s.description, category: s.category,
       code: s.code, code_type: s.code_type || 'dsl',
       params_schema: s.params_schema,
+      context_timeframes: s.context_timeframes || [],
+      context_lookback: s.context_lookback || 20,
     }
     isNew.value = false
     validate()
@@ -117,6 +152,8 @@ function newStrategy() {
     code_type: 'dsl',
     code: templates.value.blank_template || 'signal = MA(close, 7) > MA(close, 25)\n止损 = 0.05\n止盈 = 0.10\n仓位 = 1.0',
     params_schema: {},
+    context_timeframes: [],
+    context_lookback: 20,
   }
   validate()
 }
@@ -131,6 +168,8 @@ function useTemplate(t) {
     code: t.code,
     code_type: t.code_type || 'dsl',
     params_schema: t.params_schema,
+    context_timeframes: t.context_timeframes || [],
+    context_lookback: t.context_lookback || 20,
   }
   validate()
 }
@@ -176,7 +215,12 @@ function validate() {
   if (validationTimer) clearTimeout(validationTimer)
   validationTimer = setTimeout(async () => {
     try {
-      const res = await validateStrategyCode(editForm.value.code, editForm.value.code_type)
+      const res = await validateStrategyCode(
+        editForm.value.code,
+        editForm.value.code_type,
+        editForm.value.context_timeframes || [],
+        editForm.value.context_lookback || 20,
+      )
       validation.value = res.data
     } catch (e) {
       validation.value = { ok: false, error: e.message }
@@ -380,6 +424,36 @@ onMounted(async () => {
             <span class="param-hint">点击按钮插入示例代码到光标位置</span>
           </div>
         </div>
+        <div class="form-row">
+          <div class="form-group grow">
+            <label>
+              🕐 运行周期 (多 timeframe 上下文)
+              <span class="hint-muted">(除主图外, 额外加载的时间框架, 用于跨周期策略)</span>
+            </label>
+            <div class="ctx-config">
+              <div class="ctx-tfs">
+                <span class="ctx-label">时间框架:</span>
+                <button v-for="tf in TIMEFRAME_OPTIONS" :key="tf" type="button"
+                  :class="['ctx-tf-btn', { active: (editForm.context_timeframes || []).includes(tf) }]"
+                  @click="toggleContextTf(tf)">
+                  {{ tf }}
+                </button>
+              </div>
+              <div class="ctx-lookback">
+                <span class="ctx-label">回看根数:</span>
+                <input type="number" v-model.number="editForm.context_lookback" @input="validate"
+                  min="2" max="500" class="ctx-num" />
+                <span class="ctx-hint">每个 context tf 拉最近多少根 K 线 (用于算 ma/max/min/std/sum)</span>
+              </div>
+              <div v-if="ctxVarPreview.length" class="ctx-preview">
+                <span class="ctx-label">可用变量:</span>
+                <code v-for="v in ctxVarPreview.slice(0, 8)" :key="v">{{ v }}</code>
+                <code v-if="ctxVarPreview.length > 8" class="more">+{{ ctxVarPreview.length - 8 }}...</code>
+                <span class="ctx-hint">{{ editForm.code_type === 'dsl' ? 'DSL 表达式里直接用, 也可喂给 MA/RSI 等因子' : 'Python: ctx.klines("15m", n=20) / ctx.factor("RSI", "15m", n=20)' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="validation" v-if="validation">
           <span v-if="validation.ok" class="ok">
             ✓ {{ editForm.code_type === 'python'
@@ -538,6 +612,20 @@ def on_bar(state):
               <tr><td><code>ctx.std / sma / ema / sum(series=None, n)</code></td><td>滚动统计 (series 默认 ctx.close)</td></tr>
             </tbody>
           </table>
+
+          <h4>🕐 ctx (多 timeframe 上下文)</h4>
+          <p class="hint">设置运行周期后, 这些方法可用 (按需自动加载 K 线并缓存):</p>
+          <table class="docs-table">
+            <thead><tr><th style="width: 45%">方法</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>ctx.klines("15m", n=20)</code></td><td>截至当前 bar 时间的 15m K 线 DataFrame (最近 20 根)</td></tr>
+              <tr><td><code>ctx.series("15m", "close", n=20)</code></td><td>同上, 只返回 close 列 Series</td></tr>
+              <tr><td><code>ctx.now_tf("15m")</code></td><td>最近 1 根 15m 的 close (单值)</td></tr>
+              <tr><td><code>ctx.ref_tf("15m", "close", n=1)</code></td><td>15m 倒数第 n 根的 close (n=1=上一根)</td></tr>
+              <tr><td><code>ctx.factor("RSI", "15m", n=20)</code></td><td>在 15m 上下文上跑 RSI 因子, 返回 Series</td></tr>
+            </tbody>
+          </table>
+          <p class="hint">示例: <code>c15 = ctx.klines("15m", n=20); rsi15 = ctx.factor("RSI", "15m", n=20)</code></p>
 
           <h4>🔧 沙箱 globals (预导入)</h4>
           <p class="hint">
@@ -854,4 +942,65 @@ def on_bar(state):
   border-color: var(--yellow);
   color: var(--yellow);
 }
+
+/* ============ 运行周期 (context timeframes) ============ */
+.ctx-config {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ctx-tfs, .ctx-lookback, .ctx-preview {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ctx-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  min-width: 80px;
+}
+.ctx-tf-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-family: 'Consolas', monospace;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ctx-tf-btn:hover { border-color: var(--yellow); }
+.ctx-tf-btn.active {
+  background: var(--yellow);
+  color: #000;
+  border-color: var(--yellow);
+  font-weight: 600;
+}
+.ctx-num {
+  width: 80px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'Consolas', monospace;
+}
+.ctx-hint { font-size: 11px; color: var(--text-muted); }
+.ctx-preview code {
+  background: var(--bg-elevated);
+  color: var(--yellow);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: 'Consolas', monospace;
+}
+.ctx-preview code.more { color: var(--text-muted); background: transparent; }
 </style>

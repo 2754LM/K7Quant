@@ -68,6 +68,8 @@ class Strategy(Base):
     code: Mapped[str] = mapped_column(Text, nullable=False)
     code_type: Mapped[str] = mapped_column(String(16), default="dsl")  # dsl | python
     params_schema: Mapped[Optional[str]] = mapped_column(Text)   # JSON
+    context_timeframes: Mapped[Optional[str]] = mapped_column(Text)   # JSON list, e.g. ["15m", "1h"]
+    context_lookback: Mapped[int] = mapped_column(Integer, default=20)   # 每个 context tf 拉多少根
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -81,6 +83,8 @@ class Strategy(Base):
             "code": self.code,
             "code_type": self.code_type or "dsl",
             "params_schema": json.loads(self.params_schema) if self.params_schema else {},
+            "context_timeframes": json.loads(self.context_timeframes) if self.context_timeframes else [],
+            "context_lookback": int(self.context_lookback) if self.context_lookback else 20,
             "is_builtin": bool(self.is_builtin),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
@@ -325,12 +329,15 @@ def get_strategy(strategy_id: int) -> Optional[dict]:
 
 def create_strategy(name: str, description: str, category: str, code: str,
                      params_schema: dict, code_type: str = "dsl",
+                     context_timeframes: list = None, context_lookback: int = 20,
                      is_builtin: int = 0) -> int:
     with transaction() as s:
         obj = Strategy(
             name=name, description=description, category=category, code=code,
             code_type=code_type or "dsl",
             params_schema=json.dumps(params_schema or {}, ensure_ascii=False),
+            context_timeframes=json.dumps(context_timeframes or [], ensure_ascii=False),
+            context_lookback=int(context_lookback) if context_lookback else 20,
             is_builtin=bool(is_builtin),
         )
         s.add(obj)
@@ -340,7 +347,8 @@ def create_strategy(name: str, description: str, category: str, code: str,
 
 def update_strategy(strategy_id: int, name: str = None, description: str = None,
                      category: str = None, code: str = None, params_schema: dict = None,
-                     code_type: str = None):
+                     code_type: str = None, context_timeframes: list = None,
+                     context_lookback: int = None):
     """部分更新: 传入 None 的字段保持原值"""
     with transaction() as s:
         obj = s.get(Strategy, strategy_id)
@@ -351,6 +359,8 @@ def update_strategy(strategy_id: int, name: str = None, description: str = None,
         if category is not None: obj.category = category
         if code is not None: obj.code = code
         if code_type is not None: obj.code_type = code_type
+        if context_timeframes is not None: obj.context_timeframes = json.dumps(context_timeframes, ensure_ascii=False)
+        if context_lookback is not None: obj.context_lookback = int(context_lookback)
         if params_schema is not None: obj.params_schema = json.dumps(params_schema, ensure_ascii=False)
 
 

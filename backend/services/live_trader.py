@@ -6,6 +6,8 @@
 - 现货账户只能做多: 负信号 (做空) 一律压成空仓。
 - 行情走公开 API (get_kline, use_cache=False 强制最新), 成交在 demo 账户, 价格可能有偏差。
 - 后端重启不自动续跑 (线程随进程结束)。
+- 支持 DSL 和 Python 两种 code_type (Python 走 PythonStrategy 沙箱 + on_bar 状态机)
+- 支持多 timeframe 上下文 (context_timeframes, 在 evaluate 时拉取 ctx_data)
 """
 import threading
 import time
@@ -17,6 +19,8 @@ from backend.core.logger import log
 from backend.data.access import get_kline
 from backend.data.demo_client import get_demo_client, DemoApiError
 from backend.strategy import StrategyEngine
+from backend.strategy.sandbox import PythonStrategy
+from backend.strategy.context import build_ctx_series
 from backend.storage import crud
 from backend.services.trade_service import _floor_qty, _guard_simulation
 
@@ -46,8 +50,15 @@ class LiveTrader:
         self._lock = threading.RLock()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
-        self._signal_fn = None
+        self._signal_fn = None         # DSL signal_fn(df) -> Series
+        self._py_runner = None         # PythonStrategy instance (Python mode)
+        self._py_state = None          # Python mode 的 state (跨 tick 保留)
+        self._py_capital = 10000.0     # Python mode 的虚拟本金 (用于回算 pos_avg)
         self._code = ""
+        self._code_type = "dsl"
+        self._ctx_tfs: list = []
+        self._ctx_lookback: int = 20
+        self._ctx_cache: dict = {}     # 缓存 ctx_data
         self._reset_state()
 
     # ---- 状态 ----
@@ -72,6 +83,8 @@ class LiveTrader:
         self.updated_at = None
         self.error = ""
         self.logs = []
+        self.code_type = "dsl"
+        self.context_timeframes = []
 
     def status(self) -> dict:
         return {
@@ -80,6 +93,8 @@ class LiveTrader:
             "strategy_name": self.strategy_name,
             "symbol": self.symbol,
             "timeframe": self.timeframe,
+            "code_type": self.code_type,
+            "context_timeframes": self.context_timeframes,
             "position": self.position,
             "entry_price": round(self.entry_price, 6),
             "qty": self.qty,
@@ -118,14 +133,50 @@ class LiveTrader:
             strat = crud.get_strategy(strategy_id)
             if not strat:
                 return {"ok": False, "error": f"策略 ID {strategy_id} 不存在"}
+            self._code = strat["code"]
+            self._code_type = strat.get("code_type", "dsl") or "dsl"
+            self._ctx_tfs = strat.get("context_timeframes") or []
+            self._ctx_lookback = int(strat.get("context_lookback") or 20)
+            self._ctx_cache = {}
+
             try:
-                signal_fn, rules = StrategyEngine.compile(strat["code"], params or {})
+                if self._code_type == "python":
+                    self._py_runner = PythonStrategy(self._code)
+                    # 先 compile 才能拿到 funcs
+                    self._py_runner.compile()
+                    # 调 init() 拿初始 state
+                    init_fn = self._py_runner._funcs.get("init")
+                    self._py_state = init_fn() if init_fn else {}
+                    if not isinstance(self._py_state, dict):
+                        self._py_state = {}
+                    self._py_capital = float(
+                        (params or {}).get("capital") or sys_config.get("backtest.initial_capital", 10000)
+                    )
+                    # Python 模式的止损止盈/仓位从 config 取
+                    rules = {
+                        "stop_loss": float(sys_config.get("trading.stop_loss_pct", 0) or 0),
+                        "take_profit": float(sys_config.get("trading.take_profit_pct", 0) or 0),
+                        "position_size": float(sys_config.get("trading.max_position_pct", 1.0) or 1.0),
+                    }
+                else:
+                    self._py_runner = None
+                    self._py_state = None
+                    # DSL: 拉 ctx_data 并编译
+                    ctx_info = self._load_ctx_data()
+                    self._signal_fn, rules = StrategyEngine.compile(
+                        self._code, params or {},
+                        ctx_series=ctx_info["ctx_series"],
+                        ctx_extra_cols=ctx_info["ctx_extra_cols"],
+                    )
+                    if self._ctx_tfs:
+                        rules["context_timeframes"] = self._ctx_tfs
+                        rules["context_lookback"] = self._ctx_lookback
             except Exception as e:
+                import traceback
+                log.error(f"[live] 策略编译失败:\n{traceback.format_exc()}")
                 return {"ok": False, "error": f"策略编译失败: {e}"}
 
             self._reset_state()
-            self._signal_fn = signal_fn
-            self._code = strat["code"]
             self.strategy_id = strategy_id
             self.strategy_name = strat["name"]
             self.symbol = symbol.upper()
@@ -134,6 +185,8 @@ class LiveTrader:
             self.stop_loss = float(rules.get("stop_loss") or sys_config.get("trading.stop_loss_pct", 0) or 0)
             self.take_profit = float(rules.get("take_profit") or sys_config.get("trading.take_profit_pct", 0) or 0)
             self.position_size = float(rules.get("position_size") or 1.0)
+            self.code_type = self._code_type
+            self.context_timeframes = list(self._ctx_tfs)
             self.running = True
             self.started_at = _now_iso()
             self._stop.clear()
@@ -155,15 +208,40 @@ class LiveTrader:
         self.updated_at = _now_iso()
         return {"ok": True, "status": self.status()}
 
+    def _load_ctx_data(self) -> dict:
+        """拉主图 + 上下文 K 线, 构建 ctx_series / ctx_extra_cols / ctx_data"""
+        if not self._ctx_tfs:
+            return {"ctx_series": {}, "ctx_extra_cols": set(), "ctx_data": {}}
+        # 拉主图
+        tf_sec = _TF_SECONDS.get(self.timeframe, 3600)
+        lookback_days = max(2, int((_LOOKBACK_BARS * tf_sec) / 86400) + 1)
+        start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y%m%d")
+        end = (datetime.now() + timedelta(days=1)).strftime("%Y%m%d")
+        try:
+            main_df = get_kline(self.symbol, self.timeframe, start, end, use_cache=False)
+        except Exception as e:
+            log.warning(f"[live] 拉主图 {self.symbol} {self.timeframe} 失败: {e}")
+            main_df = None
+        if main_df is None or main_df.empty:
+            return {"ctx_series": {}, "ctx_extra_cols": set(), "ctx_data": {}}
+        try:
+            return build_ctx_series(main_df, self.symbol, self.timeframe,
+                                    self._ctx_tfs, self._ctx_lookback)
+        except Exception as e:
+            log.warning(f"[live] build_ctx_series 失败: {e}")
+            return {"ctx_series": {}, "ctx_extra_cols": set(), "ctx_data": {}}
+
     # ---- 主循环 ----
     def _run(self):
         tf_sec = _TF_SECONDS.get(self.timeframe, 3600)
         try:
             self._sync_position_from_account()
             self._log(f"启动: {self.strategy_name} · {self.symbol} · {self.timeframe} · "
+                      f"type={self._code_type} · ctx={self._ctx_tfs} · "
                       f"仓位={self.position} · 止损={self.stop_loss} 止盈={self.take_profit}")
         except Exception as e:
             self._set_error(f"启动同步持仓失败: {e}")
+            import traceback; log.exception(f"[live] 启动异常: {e}\n{traceback.format_exc()}")
 
         while not self._stop.is_set():
             try:
@@ -183,7 +261,8 @@ class LiveTrader:
                 self._set_error(str(e))
             except Exception as e:
                 self._set_error(str(e))
-                log.exception("[live] 循环异常")
+                import traceback
+                log.exception(f"[live] 循环异常: {e}\n{traceback.format_exc()}")
             self._stop.wait(_SLTP_TICK_SECONDS)
 
         self.running = False
@@ -242,7 +321,11 @@ class LiveTrader:
         # end 必须用「明天」: get_kline 的 _filter 是 date <= end(当天0点UTC),
         # 用今天会把今天一整天的日内 K 线全过滤掉, 信号就冻结在 0 点那根 -> 永不翻转。
         end = (now_dt + timedelta(days=1)).strftime("%Y%m%d")
-        df = get_kline(self.symbol, self.timeframe, start, end, use_cache=False)
+        try:
+            df = get_kline(self.symbol, self.timeframe, start, end, use_cache=False)
+        except Exception as e:
+            self._set_error(f"拉 K 线失败: {e}")
+            return
         if df is None or df.empty or len(df) < 5:
             self._log("K线不足, 跳过本次评估")
             return
@@ -251,21 +334,87 @@ class LiveTrader:
         closed = df[df["date"] <= cutoff]
         if closed.empty:
             closed = df.iloc[:-1] if len(df) > 1 else df
+
         try:
-            sig = self._signal_fn(closed)
-            val = float(sig.iloc[-1]) if hasattr(sig, "iloc") else float(sig)
+            if self._code_type == "python":
+                sig_intent = self._eval_python_signal(closed, price)
+            else:
+                sig_intent = self._eval_dsl_signal(closed)
         except Exception as e:
+            import traceback
+            log.exception(f"[live] 信号计算失败:\n{traceback.format_exc()}")
             self._set_error(f"信号计算失败: {e}")
             return
-        desired = 1 if val > 0 else 0     # 现货只做多, 负信号压成空仓
-        self.last_signal = desired
 
+        if sig_intent is None:
+            return
+        desired = sig_intent
+        self.last_signal = desired
         if desired == 1 and self.position == "flat":
             self._buy(price)
         elif desired == 0 and self.position == "long":
             self._sell_all(price, reason="信号平仓")
         else:
             self._log(f"信号={desired}, 维持 {self.position}")
+
+    def _eval_dsl_signal(self, closed: "pd.DataFrame") -> Optional[int]:
+        """DSL: signal_fn(df) -> Series, 取最后值"""
+        sig = self._signal_fn(closed)
+        val = float(sig.iloc[-1]) if hasattr(sig, "iloc") else float(sig)
+        return 1 if val > 0 else 0     # 现货只做多, 负信号压成空仓
+
+    def _eval_python_signal(self, closed: "pd.DataFrame", price: float) -> Optional[int]:
+        """Python 策略: 用 on_bar 模拟跑 closed 上的所有 bar, 取最后一次 buy/sell 意图
+
+        简化: 一次性在 closed 上跑完, 收集最后一次 action 决定 desired position
+        """
+        # 拉 ctx_data
+        try:
+            ctx_info = build_ctx_series(closed, self.symbol, self.timeframe,
+                                        self._ctx_tfs, self._ctx_lookback)
+        except Exception as e:
+            log.warning(f"[live] python ctx 拉取失败: {e}")
+            ctx_info = {"ctx_data": {}}
+
+        # 在 closed 上模拟回放
+        # 注: 这里直接调 PythonStrategy.run() 一次, 拿 final position 意图
+        # 但 run() 会跑完整 K 线, 包括历史 bar, 状态会推到最新
+        try:
+            result = self._py_runner.run(
+                closed, capital=self._py_capital,
+                primary_symbol=self.symbol, primary_timeframe=self.timeframe,
+                ctx_data=ctx_info["ctx_data"],
+            )
+        except Exception as e:
+            import traceback
+            log.exception(f"[live] python 策略执行失败:\n{traceback.format_exc()}")
+            self._set_error(f"Python 策略执行失败: {e}")
+            return None
+
+        # 拿最后一次 action 决定 desired
+        actions = result.get("actions") or []
+        # 关键: 保留 state 以便后续 tick 继续累计, 但合并 _last_error
+        prev_state = self._py_state or {}
+        new_state = result.get("final_state") or {}
+        prev_state.update(new_state)
+        self._py_state = prev_state
+        if not actions:
+            self._log("Python 策略无任何交易意图, 维持当前")
+            return None
+        last = actions[-1]
+        last_action = last.get("action")
+        # desired: 1 = 多 (持仓), 0 = 空仓
+        # buy 表示希望加仓, sell_all 表示清仓
+        # 我们以最终状态为准: last bar 后是 buy/sell/sell_all
+        if last_action == "sell":
+            return 0
+        if last_action == "sell_all":
+            return 0
+        if last_action == "buy":
+            # 模拟盘只能跟随 (要么 flat→long, 要么 long 加仓)
+            # 简化: buy 就转 long (不区分加仓, 现货也没法真加仓, 实际还是按 full balance 重买)
+            return 1
+        return None
 
     # ---- 下单 ----
     def _buy(self, price: float):

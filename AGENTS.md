@@ -1,12 +1,13 @@
 # K7Quant - AI Agent 工作指南
 
 帮助 AI Agent (Claude/Cursor/Copilot 等) 快速理解项目并高效修改代码。
-**本文与实际代码一致 (v4.0)**：后端在 `backend/`，配置是根目录 `config.yaml`，策略是 DSL 表达式。
+**本文与实际代码一致 (v4.1)**：后端在 `backend/`，配置是根目录 `config.yaml`，
+策略支持 **DSL 表达式** + **Python 沙箱** 两种类型 (code_type 字段)。
 
 ## 项目一句话总结
 
 基于 Binance 公开 API 的加密货币量化回测系统：FastAPI + Vue3 + SQLite + YAML 配置，
-因子库 (30+) + DSL 自定义策略 + 多周期回测。**纯本地单机运行，不要把它部署到公网。**
+因子库 (33+) + DSL/Python 双策略系统 + 多 timeframe 上下文 + 模拟盘。**纯本地单机运行，不要把它部署到公网。**
 
 ## 技术栈
 
@@ -45,7 +46,10 @@ D:\Desktop\lh\
 │   │   └── trade_service.py
 │   ├── storage/__init__.py   # 兼容层: 旧 crud.xxx 调用转发到 models
 │   ├── factor/__init__.py    # 33+ 因子 (MA/EMA/RSI/MACD/...)
-│   ├── strategy/__init__.py  # 8 个内置策略 + DSL 引擎
+│   ├── strategy/
+│   │   ├── __init__.py       # 9 个内置策略 + DSL 引擎 (StrategyEngine)
+│   │   ├── sandbox.py        # 🐍 Python 沙箱 (PythonStrategy + _Context)
+│   │   └── context.py        # 🕐 多 timeframe 上下文 (build_ctx_series)
 │   ├── backtest/__init__.py  # Backtester + compute_metrics
 │   ├── data/                 # 数据下载/缓存/访问
 │   │   ├── fetcher.py
@@ -68,9 +72,8 @@ D:\Desktop\lh\
 │       │   ├── StateView.vue
 │       │   ├── RuleBuilder.vue
 │       │   ├── SystemLogPanel.vue
-│       │   ├── LoadingOverlay.vue
-│       │   └── MonacoEditor.vue
-│       ├── views/             # 10 个 Tab
+│       │   └── LoadingOverlay.vue
+│       ├── views/             # 10 个 Tab (含 Strategy.vue: DSL/Python 编辑器 + 运行周期)
 │       ├── utils/
 │       │   └── systemLog.js
 │       ├── App.vue            # 根 (Naive UI Provider + Tab 路由)
@@ -92,6 +95,8 @@ D:\Desktop\lh\
 |---------|--------------|
 | 加内置策略 | `backend/strategy/__init__.py` 的 `BUILTIN_STRATEGIES` 数组 |
 | 改策略 DSL 引擎 | `backend/strategy/__init__.py` 的 `StrategyEngine` (compile/_parse/_build_signal_fn) |
+| 改/加 Python 策略 | `backend/strategy/sandbox.py` (`PythonStrategy` + `_Context`); 安全白名单见 `_validate_ast` |
+| 改多 timeframe 上下文 | `backend/strategy/context.py` (`build_ctx_series` / `_compute_ctx_for_tf`); 注入 ctx_<tf>_<col>_<stat><n> |
 | 加因子 | `backend/factor/__init__.py` 写 `f_xxx(df, **p)` + 在 `_FACTORS` 列表注册 |
 | 改回测逻辑 | `backend/backtest/__init__.py` (`Backtester.run` / `compute_metrics`) |
 | 改配置项 | `config.yaml` + `backend/core/config.py` 的 `DEFAULTS` + 前端 `Settings.vue` |
@@ -118,10 +123,13 @@ D:\Desktop\lh\
 `/api/factor/rank` (POST) - 跨币种排名
 `/api/strategy/list` (GET) - 策略列表
 `/api/strategy/{id}` (GET) - 策略详情
-`/api/strategy/create|update|delete` (POST) - CRUD
+`/api/strategy/create|update|delete` (POST) - CRUD (含 code_type + context_timeframes + context_lookback)
 `/api/strategy/templates` (GET) - 模板
 `/api/strategy/dsl-docs` (GET) - DSL 文档
-`/api/strategy/validate` (POST) - 代码验证
+`/api/strategy/validate` (POST) - 代码验证 (code_type + context 参数)
+`/api/strategy/compile-python` (POST) - Python 策略测试编译
+`/api/factor/create-custom` (POST) / `/api/factor/custom/{id}` (DELETE) - 自定义 DSL 因子
+`/api/factor/dsl-docs` (GET) - 因子帮助
 `/api/backtest/single` (POST) - 单币回测
 `/api/backtest/scan` (POST) - 池扫描
 `/api/backtest/code` (POST) - 用代码回测
@@ -146,7 +154,14 @@ D:\Desktop\lh\
 
 ## 关键设计
 
-### 策略 DSL (`backend/strategy/__init__.py`)
+### 策略类型: DSL + Python 沙箱 (`backend/strategy/`)
+
+策略表 `strategies` 多了 3 个字段:
+- `code_type`: `"dsl"` (默认) 或 `"python"`
+- `context_timeframes`: JSON list, 如 `["15m", "1h"]` (主图之外的额外 timeframe)
+- `context_lookback`: int, 每个 context tf 拉多少根 (用于算 ma/max/min/std/sum)
+
+#### DSL 表达式 (`backend/strategy/__init__.py`)
 
 策略是一段 DSL 文本，存在 `BUILTIN_STRATEGIES` 数组或 DB `strategies` 表：
 
@@ -154,16 +169,16 @@ D:\Desktop\lh\
 {
     "name": "双均线交叉",
     "description": "MA7 上穿 MA25 买入",
-    "category": "trend",       # trend / mean_reversion / momentum / breakout / volume / custom
+    "category": "trend",
     "code": """signal = CROSS_UP(MA(close, 7), MA(close, 25)) AND NOT CROSS_DOWN(MA(close, 7), MA(close, 25))
 止损 = 0.05
 止盈 = 0.15
 仓位 = 1.0""",
-    "params_schema": {"ma_short": {"label": "短均线", "type": "int", "default": 7, "min": 2, "max": 60}}
+    "params_schema": {"ma_short": {"label": "短均线", "type": "int", "default": 7, "min": 2, "max": 60, "unit": "周期", "hint": "..."}}
 }
 ```
 
-`StrategyEngine.compile(code, params)` 流程:
+`StrategyEngine.compile(code, params, ctx_series, ctx_extra_cols)` 流程:
 1. `_parse(code)` - 用正则匹配 `signal/止损/止盈/仓位/频率`
 2. 提取 `signal` 表达式
 3. `replace_cols()` - `close` → `_df["close"]`
@@ -172,6 +187,54 @@ D:\Desktop\lh\
 6. `exec()` 在沙箱里执行, 暴露 `_df` + 因子函数
 
 **安全**: AST 白名单 + 禁止属性访问 + 禁止下标。没有 `eval`。
+**多 timeframe 上下文**: 配置 `context_timeframes: ["15m"]` 后, DSL 里可直接用:
+- `ctx_15m_close` / `ctx_15m_open` / `ctx_15m_high` / `ctx_15m_low` / `ctx_15m_volume`: 截至主 bar 时间的最新值
+- `ctx_15m_ma20` / `ctx_15m_max20` / `ctx_15m_min20` / `ctx_15m_std20` / `ctx_15m_sum20`: 最近 20 根 15m K 线的统计
+- 例: `signal = (ctx_15m_close > ctx_15m_ma20) AND (close > MA(close, 7))`
+
+#### Python 沙箱 (`backend/strategy/sandbox.py`)
+
+`code_type = "python"` 时启用, 适合需要状态/循环/动态仓位的策略 (如 Martingale):
+```python
+def init():
+    """可选, 返回 state dict (跨 bar 持久化)"""
+    return {"entry": 0, "qty": 0, "grids": 0}
+
+def on_bar(state):
+    """必填, 每根 K 线调用一次"""
+    p = ctx.now()        # 主图当前 close
+    if p < state["entry"] * 0.99 and state["grids"] < 5:
+        state["entry"] = p
+        state["qty"] *= 2
+        state["grids"] += 1
+        buy(state["qty"])
+```
+
+**沙箱 globals 暴露**: `pd` / `np` / `math` / `json` / `datetime` / `collections` /
+`itertools` / `functools` / `list` / `dict` / `set` / `range` / `enumerate` / `len` / `min` / `max` / `sum` / `abs` / `round` / `sorted` / `all` / `any`
+**ctx 对象**: `now()` / `open()` / `high()` / `low()` / `volume()` / `amount()` / `time()` / `bars()` / `df` / `close` / `high` / `low` / `MA(n)` / `EMA(n)` / `RSI(n)` / `MACD()` / `BOLL(p,σ)` / `cross_up(a,b)` / `ref(series,n)` / `bars_since(cond)` / `pct_change(n)` / `std()` / `sma()` / `ema()` / `sum()` / `klines(tf, n)` / `series(tf, col, n)` / `now_tf(tf)` / `ref_tf(tf, col, n)` / `factor(fid, tf, n)`
+**交易**: `buy(usdt)` / `sell(coin_qty)` / `sell_all()` / `cash()` / `equity()` / `position()`
+
+**安全**: AST 白名单拒绝 `import` / `async` / dunder 访问 / 危险内置 (`open`/`exec`/`eval`/`getattr`/`setattr`/`__import__`)。
+**单 bar 抛错**: 记日志 + 跳过该 bar, 不中断回测。`state["_last_error"]` 写入错误信息便于调试。
+**交易模式**:
+- `buy(usdt)`: 买入 usdt 金额 (按市价 + 滑点)
+- `sell(coin_qty)`: 卖出 coin_qty 币数
+- `sell_all()`: 全平当前持仓
+
+### 多 timeframe 上下文 (`backend/strategy/context.py`)
+
+`build_ctx_series(main_df, symbol, primary_tf, context_tfs, lookback)`:
+- 拉取每个 context tf 的 K 线 (按主图区间)
+- 计算每根主 bar 截至该时间的:
+  - 最新 1 根的 close/open/high/low/volume → `ctx_<tf>_<col>` Series
+  - 最近 N 根的 mean/max/min/std/sum → `ctx_<tf>_<stat><N>` Series
+- 输出 `{ctx_series, ctx_extra_cols, ctx_data}` 给 DSL/Python 沙箱
+
+Python 沙箱额外提供:
+- `ctx.klines(tf, n)`: 截至当前 bar 时间的 ctx tf K 线 DataFrame
+- `ctx.series(tf, col, n)`: 同上, 只取一列
+- `ctx.factor(fid, tf, n)`: 在 ctx tf 上跑因子
 
 ### 因子系统 (`backend/factor/__init__.py`)
 
@@ -179,6 +242,24 @@ D:\Desktop\lh\
 - 写函数 `f_xxx(df, **params) -> Series or DataFrame`
 - 加到 `_FACTORS` 列表自动注册到 `FACTOR_REGISTRY`
 - `_FACTORS` 元素: `(id, name_zh, name_en, category, formula, description, params_schema)`
+- **自定义因子**: `is_custom=True` + `dsl_code` 字段, 通过 DSL 引擎编译, 重启自动加载
+
+### 模拟盘实盘运行 (`backend/services/live_trader.py`)
+
+单线程后台 runner, 加载策略后:
+- **DSL**: 拉主图 + ctx_data → `StrategyEngine.compile` → 每 bar 评估 signal
+- **Python**: 拉 ctx_data → 在 closed K 线上跑 `PythonStrategy.run` → 取最后一次 action
+- 现货只做多 (负信号压成空仓)
+- 高频监控止损止盈 (每 20s tick)
+- 启动时同步账户已有持仓
+- 后端重启不自动续跑
+- **bug fix**: 之前一直用 DSL 编译 (导致 Python 策略报 "未知因子: init"), 现在按 `code_type` 分发
+
+### 全局异常处理 (`backend/app.py`)
+
+- `@app.exception_handler(Exception)`: 兜底, 任何未捕获异常进 `log.error` + 返回结构化 JSON `{error, type, path}`
+- `@app.exception_handler(RequestValidationError)`: 422 校验错误转中文友好消息 `{error, type, details, path}`
+- 所有 API endpoint 不再需要 try/except (FastAPI 会自动调用)
 
 ### 关键约定
 
@@ -204,9 +285,12 @@ D:\Desktop\lh\
 - API 错误用 `useMessage()` toast, 不要用 `alert()`
 - 表单交互要给视觉反馈 (loading 状态, 按钮 disabled 条件)
 
-## 添加新策略 (DSL)
+## 添加新策略
 
 在 `backend/strategy/__init__.py` 的 `BUILTIN_STRATEGIES` 数组加一条，然后重启后端，会自动写入 DB (见 `strategy_service.init_builtin_strategies()`)。
+
+- **DSL 策略**: `"code": "signal = ...\n止损 = 0.05\n止盈 = 0.10\n仓位 = 1.0"`
+- **Python 策略**: `"code_type": "python"`, `"code": "def init()...\\ndef on_bar(state)..."`
 
 ## 添加新 ORM 表 / 字段 (SQLAlchemy 2.0)
 
@@ -288,6 +372,8 @@ python -c "from backend.models import list_symbols, list_strategies; print(len(l
 9. **时间格式**: 前后端统一 YYYYMMDD (8 位字符串)。`DateRangePicker` 用 Naive UI 的 `n-date-picker` + 内部转换。
 10. **改了后端要重启**: `pythonw` 启动的进程不会热加载 Python 模块；用 `uvicorn --reload` 开发。
 11. **ECharts 多网格必设 gridIndex**: 当 chart 拆分为多子图（如 K线 + 成交量副图），yAxis 必须显式指定 `gridIndex`（与 xAxis 一致），否则 `dataProcessor.reset` 会因轴-网格关联错位而崩溃。见 `KLine.vue:drawChart`。
+12. **Python 策略走沙箱, 不能用 DSL 编译**: `live_trader.py` / `backtest_service` 等必须先看 `strat["code_type"]` 再决定用 `StrategyEngine.compile` (DSL) 还是 `PythonStrategy` (Python)。否则 Python 代码会被当 DSL 解析报 "未知因子: init"。
+13. **多 timeframe 上下文必须传 `ctx_series`**: DSL 编译时如果策略有 `context_timeframes`, 必须把 `build_ctx_series` 算出的 `ctx_series` 传进 `StrategyEngine.compile(..., ctx_series=..., ctx_extra_cols=...)`, 否则 `ctx_15m_close` 等会被 AST 拒绝。
 
 ## 安全须知 (重要)
 

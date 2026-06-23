@@ -47,23 +47,31 @@ class StrategyEngine:
     """策略解释器"""
 
     @staticmethod
-    def compile(code: str, params: dict = None, mode: str = "strategy"):
+    def compile(code: str, params: dict = None, mode: str = "strategy",
+                ctx_series: dict = None, ctx_extra_cols: set = None):
         """编译代码, 返回 (signal_fn, rules)
 
         mode: "strategy" (默认) 把结果转 0/1 int, 用于回测
               "factor"  保留浮点原值, 用于自定义因子
+        ctx_series: 多 timeframe 上下文 Series (与主图 df 等长)
+        ctx_extra_cols: 这些名字可作为列名引用 (用于 AST 校验)
         """
         params = params or {}
         rules = StrategyEngine._parse(code)
         if "signal" in rules and rules["signal"]:
-            return StrategyEngine._build_signal_fn(rules["signal"], mode=mode), rules
+            return StrategyEngine._build_signal_fn(
+                rules["signal"], mode=mode,
+                ctx_series=ctx_series, ctx_extra_cols=ctx_extra_cols,
+            ), rules
         # 因子模式: 整段代码 = 单个表达式
         lines = [ln.strip() for ln in code.split("\n")
                  if ln.strip() and not ln.strip().startswith("#")]
         expr = " ".join(lines)
         if not expr:
             raise ValueError("策略/因子代码不能为空")
-        return StrategyEngine._build_signal_fn(expr, mode=mode), {"signal": expr, "stop_loss": 0, "take_profit": 0, "position_size": 1.0}
+        return StrategyEngine._build_signal_fn(
+            expr, mode=mode, ctx_series=ctx_series, ctx_extra_cols=ctx_extra_cols,
+        ), {"signal": expr, "stop_loss": 0, "take_profit": 0, "position_size": 1.0}
 
     @staticmethod
     def _parse(code: str) -> dict:
@@ -99,12 +107,18 @@ class StrategyEngine:
         return rules
 
     @staticmethod
-    def _build_signal_fn(expr: str, mode: str = "strategy"):
+    def _build_signal_fn(expr: str, mode: str = "strategy",
+                         ctx_series: dict = None,
+                         ctx_extra_cols: set = None):
         """把 DSL 表达式编译成可调用函数。
 
         安全实现: **不使用 eval**。先把 AND/OR/NOT 关键字转成位运算符, 再用
         ``ast`` 解析, 经白名单校验 (禁止属性访问/下标/任意名称) 后由解释器求值。
-        支持: 因子函数 + 比较 + AND/OR/NOT + CROSS_UP/CROSS_DOWN + 列名/数字。
+        支持: 因子函数 + 比较 + AND/OR/NOT + CROSS_UP/CROSS_DOWN + 列名/数字 + ctx Series。
+
+        ctx_series: 多 timeframe 上下文 Series, dict {name: pd.Series (与主图 df 同长度同索引)}
+                    例如 {"ctx_15m_close": Series, "ctx_15m_ma20": Series, ...}
+        ctx_extra_cols: 这些名字可作为列名引用, 在 AST 校验和 ev() 中识别
         """
         from backend.factor import FACTOR_REGISTRY as FR
         user_to_id = {f["name_zh"].lower(): fid for fid, f in FR.items()}
@@ -112,6 +126,8 @@ class StrategyEngine:
 
         COLS = {"close", "open", "high", "low", "volume", "amount"}
         CROSS = {"CROSS_UP", "CROSS_DOWN"}
+        ctx_extra_cols = ctx_extra_cols or set()
+        ALL_NAMES = COLS | ctx_extra_cols
 
         def resolve_factor_id(name):
             if name in FR:
@@ -126,6 +142,13 @@ class StrategyEngine:
             if name in {"AND", "OR", "NOT"} or name in CROSS:
                 continue
             if resolve_factor_id(name) is None:
+                # 启发式: 如果代码看起来像 Python (有 def/class/import), 提示用户切到 Python
+                if re.search(r"^\s*(def |class |from |import |if __name__)",
+                             expr, re.MULTILINE):
+                    raise ValueError(
+                        f"未知因子: {name} (代码看起来像 Python, "
+                        f"请把 '代码类型' 切换到 '🐍 Python 脚本' 后再保存)"
+                    )
                 raise ValueError(f"未知因子: {name}")
 
         transformed = StrategyEngine._logic_to_operators(expr)
@@ -134,7 +157,7 @@ class StrategyEngine:
         except SyntaxError as e:
             raise ValueError(f"表达式语法错误: {e}")
 
-        StrategyEngine._validate_ast(tree, COLS, CROSS, resolve_factor_id)
+        StrategyEngine._validate_ast(tree, ALL_NAMES, CROSS, resolve_factor_id)
 
         def signal_fn(df: pd.DataFrame) -> pd.Series:
             cache = {}
@@ -208,6 +231,8 @@ class StrategyEngine:
                 if isinstance(node, ast.Name):
                     if node.id in COLS:
                         return df[node.id]
+                    if ctx_series and node.id in ctx_series:
+                        return ctx_series[node.id]
                     raise ValueError(f"未知标识符: {node.id}")
                 if isinstance(node, ast.Constant):
                     return node.value
@@ -491,6 +516,28 @@ def on_bar(state):
             "drop_pct": {"label": "跌幅阈值", "type": "float", "default": 0.99, "min": 0.90, "max": 0.999, "unit": "比率", "hint": "相对上次加仓价跌到此比率才加仓 (0.99 = 跌 1%)"},
             "rise_pct": {"label": "止盈阈值", "type": "float", "default": 1.005, "min": 1.001, "max": 1.10, "unit": "比率", "hint": "相对上次加仓价涨到此比率就全平 (1.005 = 涨 0.5%)"},
             "base_qty": {"label": "基础仓", "type": "float", "default": 100, "min": 10, "max": 10000, "unit": "USDT", "hint": "首次建仓 / 止盈重置后的基础下单金额"},
+        },
+    },
+    {
+        "name": "多周期共振 (15m+1h)",
+        "description": "主图 1d + 15m / 1h 上下文: 15m 短线趋势 + 1h 中线趋势同向时入场, 上下轨过滤, 日线 MA25 中线过滤。",
+        "category": "trend",
+        "code_type": "dsl",
+        "context_timeframes": ["15m", "1h"],
+        "context_lookback": 20,
+        "code": """# 多周期共振策略
+# 15m 短线趋势: 15m close > 15m MA20
+# 1h 中线趋势: 1h close > 1h MA20
+# 主图 1d 过滤: close > MA(close, 25)
+# 三者共振做多
+
+signal = (ctx_15m_close > ctx_15m_ma20) AND (ctx_1h_close > ctx_1h_ma20) AND (close > MA(close, 25))
+止损 = 0.05
+止盈 = 0.15
+仓位 = 1.0
+""",
+        "params_schema": {
+            "ma_filter": {"label": "主图 MA 周期", "type": "int", "default": 25, "min": 5, "max": 120, "unit": "周期", "hint": "主图日线均线周期, 做中线趋势过滤"},
         },
     },
 ]

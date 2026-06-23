@@ -16,6 +16,8 @@ class CreateRequest(BaseModel):
     code: str
     code_type: str = "dsl"
     params_schema: dict = {}
+    context_timeframes: list = []
+    context_lookback: int = 20
 
 
 class UpdateRequest(CreateRequest):
@@ -25,6 +27,8 @@ class UpdateRequest(CreateRequest):
 class ValidateRequest(BaseModel):
     code: str
     code_type: str = "dsl"
+    context_timeframes: list = []
+    context_lookback: int = 20
 
 
 class CompilePythonRequest(BaseModel):
@@ -77,7 +81,11 @@ def delete(strategy_id: int):
 
 @router.post("/validate")
 def validate(req: ValidateRequest):
-    return strategy_service.validate_code(req.code, code_type=req.code_type)
+    return strategy_service.validate_code(
+        req.code, code_type=req.code_type,
+        context_timeframes=req.context_timeframes,
+        context_lookback=req.context_lookback,
+    )
 
 
 @router.post("/compile-python")

@@ -16,6 +16,8 @@ def init_builtin_strategies():
     existing = {s["name"]: s for s in crud.list_strategies()}
     for s in get_builtin_strategies():
         ct = s.get("code_type", "dsl")
+        ctx_tfs = s.get("context_timeframes") or []
+        ctx_n = int(s.get("context_lookback") or 20)
         if s["name"] in existing:
             # 已存在: 同步 params_schema (允许新增 unit/hint 等字段, 不影响用户自定义修改的 name/code)
             old = existing[s["name"]]
@@ -24,7 +26,9 @@ def init_builtin_strategies():
             schema_changed = old.get("params_schema") != s["params_schema"]
             desc_changed = old.get("description") != s["description"]
             type_changed = old.get("code_type", "dsl") != ct
-            if schema_changed or desc_changed or type_changed:
+            ctx_changed = (old.get("context_timeframes") or []) != ctx_tfs
+            ctx_n_changed = int(old.get("context_lookback") or 20) != ctx_n
+            if schema_changed or desc_changed or type_changed or ctx_changed or ctx_n_changed:
                 try:
                     crud.update_strategy(
                         strategy_id=sid,
@@ -34,6 +38,8 @@ def init_builtin_strategies():
                         code=old["code"],  # 保留原 code (可能用户改过)
                         code_type=ct,
                         params_schema=s["params_schema"],
+                        context_timeframes=ctx_tfs,
+                        context_lookback=ctx_n,
                     )
                 except Exception as e:
                     print(f"[init_builtin_strategies] update {s['name']} 失败: {e}")
@@ -42,7 +48,10 @@ def init_builtin_strategies():
             name=s["name"], description=s["description"],
             category=s["category"], code=s["code"],
             code_type=ct,
-            params_schema=s["params_schema"], is_builtin=1,
+            params_schema=s["params_schema"],
+            context_timeframes=ctx_tfs,
+            context_lookback=ctx_n,
+            is_builtin=1,
         )
 
 
@@ -58,6 +67,8 @@ def create_strategy(data: dict) -> dict:
     """用户自定义策略"""
     code = data.get("code", "")
     code_type = data.get("code_type", "dsl")
+    ctx_tfs = data.get("context_timeframes") or []
+    ctx_lookback = int(data.get("context_lookback") or 20)
     # 验证代码可编译
     if code_type == "python":
         from backend.strategy.sandbox import validate_python_strategy
@@ -65,15 +76,17 @@ def create_strategy(data: dict) -> dict:
         if not r["ok"]:
             return {"error": f"Python 策略校验失败: {r['error']}"}
     else:
-        try:
-            StrategyEngine.compile(code, {})
-        except Exception as e:
-            return {"error": f"策略代码无法编译: {e}"}
+        r = validate_code(code, code_type=code_type,
+                          context_timeframes=ctx_tfs, context_lookback=ctx_lookback)
+        if not r.get("ok"):
+            return {"error": f"策略代码无法编译: {r.get('error', '未知错误')}"}
     sid = crud.create_strategy(
         name=data["name"], description=data.get("description", ""),
         category=data.get("category", "custom"),
         code=code, code_type=code_type,
         params_schema=data.get("params_schema", {}),
+        context_timeframes=ctx_tfs,
+        context_lookback=ctx_lookback,
         is_builtin=0,
     )
     return {"id": sid, "ok": True}
@@ -82,6 +95,8 @@ def create_strategy(data: dict) -> dict:
 def update_strategy(strategy_id: int, data: dict) -> dict:
     code = data.get("code", "")
     code_type = data.get("code_type", "dsl")
+    ctx_tfs = data.get("context_timeframes")
+    ctx_lookback = data.get("context_lookback")
     if code:
         if code_type == "python":
             from backend.strategy.sandbox import validate_python_strategy
@@ -89,16 +104,19 @@ def update_strategy(strategy_id: int, data: dict) -> dict:
             if not r["ok"]:
                 return {"error": f"Python 策略校验失败: {r['error']}"}
         else:
-            try:
-                StrategyEngine.compile(code, {})
-            except Exception as e:
-                return {"error": f"策略代码无法编译: {e}"}
+            r = validate_code(code, code_type=code_type,
+                              context_timeframes=ctx_tfs or [],
+                              context_lookback=int(ctx_lookback or 20))
+            if not r.get("ok"):
+                return {"error": f"策略代码无法编译: {r.get('error', '未知错误')}"}
     crud.update_strategy(
         strategy_id=strategy_id,
         name=data["name"], description=data.get("description", ""),
         category=data.get("category", "custom"),
         code=code, code_type=code_type,
         params_schema=data.get("params_schema", {}),
+        context_timeframes=ctx_tfs,
+        context_lookback=ctx_lookback,
     )
     return {"ok": True}
 
@@ -108,13 +126,34 @@ def delete_strategy(strategy_id: int) -> dict:
     return {"ok": True}
 
 
-def validate_code(code: str, code_type: str = "dsl") -> dict:
-    """实时校验策略代码"""
+def validate_code(code: str, code_type: str = "dsl",
+                   context_timeframes: list = None,
+                   context_lookback: int = 20) -> dict:
+    """实时校验策略代码
+
+    DSL 模式下, 如果传了 context_timeframes, 会预生成 ctx_* 变量名让 AST 校验通过
+    (不会真的拉 K 线, 只为了让 validator 认识这些名字)
+    """
     if code_type == "python":
         from backend.strategy.sandbox import validate_python_strategy
         return validate_python_strategy(code)
+    ctx_extra_cols = set()
+    if context_timeframes:
+        from backend.strategy.context import _tf_name
+        from backend.strategy.context import _compute_ctx_for_tf  # noqa
+        # 生成所有可能的 ctx_<tf>_<col>_<stat><n> 名字
+        cols = ("close", "open", "high", "low", "volume")
+        stats = ("ma", "max", "min", "std", "sum")
+        for tf in context_timeframes:
+            tfn = _tf_name(tf)
+            for c in cols:
+                ctx_extra_cols.add(f"ctx_{tfn}_{c}")
+            for s in stats:
+                ctx_extra_cols.add(f"ctx_{tfn}_{s}{context_lookback}")
     try:
-        signal_fn, rules = StrategyEngine.compile(code, {})
+        signal_fn, rules = StrategyEngine.compile(
+            code, {}, ctx_extra_cols=ctx_extra_cols,
+        )
         return {"ok": True, "rules": rules}
     except Exception as e:
         return {"ok": False, "error": str(e)}

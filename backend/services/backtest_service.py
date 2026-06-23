@@ -13,6 +13,7 @@ from backend.data.access import get_kline, get_many
 from backend.backtest import Backtester, compute_metrics, plot_equity
 from backend.strategy import StrategyEngine
 from backend.strategy.sandbox import PythonStrategy
+from backend.strategy.context import build_ctx_series
 from backend.services.helpers import df_dates, to_records, sanitize, safe
 
 
@@ -93,6 +94,13 @@ def backtest_single(symbol: str, strategy_id: int, params: dict,
 
     code_type = strategy.get("code_type", "dsl")
     leverage = float(params.get("leverage", 1))
+    ctx_tfs = strategy.get("context_timeframes") or []
+    ctx_lookback = int(strategy.get("context_lookback") or 20)
+
+    # 构建多 timeframe 上下文 (Python 和 DSL 都用)
+    ctx_info = build_ctx_series(df, symbol, timeframe, ctx_tfs, ctx_lookback)
+    log.info(f"[backtest_single] context: tfs={ctx_tfs} lookback={ctx_lookback} "
+             f"series={len(ctx_info['ctx_series'])}")
 
     if code_type == "python":
         # Python 策略: 走沙箱 + 自管理仓位
@@ -100,18 +108,29 @@ def backtest_single(symbol: str, strategy_id: int, params: dict,
             py = PythonStrategy(strategy["code"])
             capital = float(params.get("capital") or
                             float(sys_config.get("backtest.initial_capital", 10000)))
-            result = py.run(df, capital=capital)
+            result = py.run(df, capital=capital,
+                            primary_symbol=symbol, primary_timeframe=timeframe,
+                            ctx_data=ctx_info["ctx_data"])
             # 适配 backtest 引擎的 equity 序列格式
             result_df = _python_result_to_df(df, result, capital=capital)
             rules = {"stop_loss": 0, "take_profit": 0, "position_size": 1.0,
-                     "rebalance_bars": 1, "mode": "python"}
+                     "rebalance_bars": 1, "mode": "python",
+                     "context_timeframes": ctx_tfs, "context_lookback": ctx_lookback}
         except Exception as e:
             log.error(f"[backtest_single] Python 策略执行失败: {symbol} sid={strategy_id} err={e}")
             return {"error": f"Python 策略执行失败: {e}"}
     else:
         # DSL 策略: 走 signal/position 路径
         try:
-            signal_fn, rules = StrategyEngine.compile(strategy["code"], params)
+            signal_fn, rules = StrategyEngine.compile(
+                strategy["code"], params,
+                ctx_series=ctx_info["ctx_series"],
+                ctx_extra_cols=ctx_info["ctx_extra_cols"],
+            )
+            # 附加 context 信息到 rules (返回给前端)
+            if ctx_tfs:
+                rules["context_timeframes"] = ctx_tfs
+                rules["context_lookback"] = ctx_lookback
             signal = signal_fn(df)
             if signal.min() < 0:
                 position = signal.clip(-1, 1).astype(int)
@@ -181,15 +200,31 @@ def backtest_with_code(symbol: str, code: str, params: dict,
             py = PythonStrategy(code)
             capital = float(params.get("capital") or
                             float(sys_config.get("backtest.initial_capital", 10000)))
-            result = py.run(df, capital=capital)
+            # code 模式下没有 strategy 记录, 接受参数 context_tfs (前端可传)
+            ctx_tfs = params.get("context_timeframes") or []
+            ctx_lookback = int(params.get("context_lookback") or 20)
+            ctx_info = build_ctx_series(df, symbol, timeframe, ctx_tfs, ctx_lookback)
+            result = py.run(df, capital=capital,
+                            primary_symbol=symbol, primary_timeframe=timeframe,
+                            ctx_data=ctx_info["ctx_data"])
             result_df = _python_result_to_df(df, result, capital=capital)
             rules = {"stop_loss": 0, "take_profit": 0, "position_size": 1.0,
-                     "rebalance_bars": 1, "mode": "python"}
+                     "rebalance_bars": 1, "mode": "python",
+                     "context_timeframes": ctx_tfs, "context_lookback": ctx_lookback}
         except Exception as e:
+            import traceback
+            log.error(f"[backtest_with_code python] {e}\n{traceback.format_exc()}")
             return {"error": f"Python 策略执行失败: {e}"}
     else:
         try:
-            signal_fn, rules = StrategyEngine.compile(code, params)
+            ctx_tfs = params.get("context_timeframes") or []
+            ctx_lookback = int(params.get("context_lookback") or 20)
+            ctx_info = build_ctx_series(df, symbol, timeframe, ctx_tfs, ctx_lookback)
+            signal_fn, rules = StrategyEngine.compile(
+                code, params,
+                ctx_series=ctx_info["ctx_series"],
+                ctx_extra_cols=ctx_info["ctx_extra_cols"],
+            )
             signal = signal_fn(df)
             if signal.min() < 0:
                 position = signal.clip(-1, 1).astype(int)
@@ -235,7 +270,8 @@ def backtest_with_code(symbol: str, code: str, params: dict,
 
 def _backtest_one_symbol(sym: str, df: pd.DataFrame, code: str, params: dict,
                          timeframe: str, position_size: float, leverage: float,
-                         rebalance_bars: int, code_type: str = "dsl") -> Optional[dict]:
+                         rebalance_bars: int, code_type: str = "dsl",
+                         ctx_tfs: list = None, ctx_lookback: int = 20) -> Optional[dict]:
     """单币回测 (线程安全, 无副作用)。
     返回: {"symbol", "metrics": {...}, "equity": pd.Series(dtype=float)} 或 None(失败)
     """
@@ -244,10 +280,18 @@ def _backtest_one_symbol(sym: str, df: pd.DataFrame, code: str, params: dict,
             py = PythonStrategy(code)
             capital = float(params.get("capital") or
                             float(sys_config.get("backtest.initial_capital", 10000)))
-            result = py.run(df, capital=capital)
+            ctx_info = build_ctx_series(df, sym, timeframe, ctx_tfs or [], ctx_lookback)
+            result = py.run(df, capital=capital,
+                            primary_symbol=sym, primary_timeframe=timeframe,
+                            ctx_data=ctx_info["ctx_data"])
             r = _python_result_to_df(df, result, capital=capital)
         else:
-            signal_fn, rules = StrategyEngine.compile(code, params)
+            ctx_info = build_ctx_series(df, sym, timeframe, ctx_tfs or [], ctx_lookback)
+            signal_fn, rules = StrategyEngine.compile(
+                code, params,
+                ctx_series=ctx_info["ctx_series"],
+                ctx_extra_cols=ctx_info["ctx_extra_cols"],
+            )
             signal = signal_fn(df)
             if hasattr(signal, "min") and signal.min() < 0:
                 position = signal.clip(-1, 1).astype(int)
@@ -337,11 +381,14 @@ def scan_pool(strategy_id: int, symbols: list = None, weights: dict = None,
     items = list(data.items())
     results = [None] * len(items)
     code_type = strategy.get("code_type", "dsl")
+    ctx_tfs = strategy.get("context_timeframes") or []
+    ctx_lookback = int(strategy.get("context_lookback") or 20)
     with ThreadPoolExecutor(max_workers=_BT_POOL_WORKERS) as ex:
         futures = {
             ex.submit(
                 _backtest_one_symbol, sym, df, strategy["code"], params, timeframe,
                 position_size, leverage, rebalance_bars, code_type,
+                ctx_tfs, ctx_lookback,
             ): i
             for i, (sym, df) in enumerate(items)
         }
@@ -416,6 +463,8 @@ def filter_symbols(params: dict) -> dict:
     strategy = None
     strategy_code = ""
     strategy_code_type = "dsl"
+    strategy_ctx_tfs = []
+    strategy_ctx_lookback = 20
     if strategy_id:
         from backend.storage import crud
         strategy = crud.get_strategy(strategy_id)
@@ -423,6 +472,8 @@ def filter_symbols(params: dict) -> dict:
             return {"error": f"策略 ID {strategy_id} 不存在"}
         strategy_code = strategy["code"]
         strategy_code_type = strategy.get("code_type", "dsl")
+        strategy_ctx_tfs = strategy.get("context_timeframes") or []
+        strategy_ctx_lookback = int(strategy.get("context_lookback") or 20)
 
     items = list(data.items())
     results = []
@@ -448,6 +499,7 @@ def filter_symbols(params: dict) -> dict:
                 float(params.get("leverage", 1)),
                 _rebalance_bars({"rebalance_bars": sys_config.get("backtest.rebalance_bars", 1)}),
                 strategy_code_type,
+                strategy_ctx_tfs, strategy_ctx_lookback,
             )
             if r is None:
                 return None

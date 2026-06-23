@@ -102,17 +102,39 @@ def _build_globals(extra: dict) -> dict:
 # ============ 上下文 ctx ============
 
 class _Context:
-    """沙箱内的 ctx 对象: 暴露当前 bar 数据 + 全部因子 + 工具
+    """沙箱内的 ctx 对象: 暴露当前 bar 数据 + 全部因子 + 工具 + 多 timeframe 上下文
 
     每根 bar 调用时, _bar 自增, _df 切片到当前 bar 位置。
     因子通过 compute_factor 调用, 传入切片 df, 返回 Series (截至当前 bar)。
+
+    多 timeframe 上下文 (ctx.klines("15m", n=20)):
+      - 首次调用 ctx.klines("15m", ...) 时, 根据当前主图 df 推断区间,
+        一次性从 cache/远端拉取足够长的 K 线并缓存到 _tf_cache。
+      - 后续调用按当前 bar 时间切片, 返回截至该时间的最近 n 根。
+      - ctx.factor("RSI", "15m", n=20) 在 klines 之上跑因子。
     """
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame, primary_symbol: str = "BTCUSDT",
+                 primary_timeframe: str = "1d",
+                 ctx_data: dict = None):
+        """
+        df: 主图 df
+        primary_symbol: 主图币种 (拉取上下文 timeframe 时复用)
+        primary_timeframe: 主图时间框架
+        ctx_data: 预加载的多 timeframe 数据 {timeframe: df} (可选, 提高性能)
+        """
         self._df_full = df
+        self._symbol = primary_symbol
+        self._primary_tf = primary_timeframe
         self._bar = 0
         self._factor_cache: dict = {}
         self._df_cache: Optional[pd.DataFrame] = None
         self._df_cache_bar: int = -1
+        # 多 timeframe 缓存: {timeframe: full_df}
+        self._tf_cache: dict = {}
+        # 预加载的额外 timeframe (回测入口已下载, 避免 ctx.klines 再去取)
+        if ctx_data:
+            for tf, tdf in ctx_data.items():
+                self._tf_cache[tf] = tdf
 
     def _slice(self) -> pd.DataFrame:
         if self._df_cache is None or self._df_cache_bar != self._bar:
@@ -122,6 +144,99 @@ class _Context:
 
     def _row(self) -> pd.Series:
         return self._df_full.iloc[self._bar]
+
+    # ---- 多 timeframe 上下文 ----
+    def klines(self, timeframe: str, n: int = None) -> pd.DataFrame:
+        """返回截至当前 bar 时间的指定 timeframe 的 K 线 DataFrame。
+
+        Args:
+            timeframe: 时间框架, 如 "15m" / "1h" / "4h" / "1d"
+            n: 最近 n 根 (None = 全部截至当前)
+
+        Returns:
+            DataFrame with columns: date, open, high, low, close, volume, amount
+        """
+        if timeframe not in self._tf_cache:
+            self._load_timeframe(timeframe)
+        full = self._tf_cache[timeframe]
+        if full is None or full.empty:
+            return full if full is not None else pd.DataFrame()
+        current_time = self._row()["date"]
+        # 统一转 Timestamp 避免 int vs Timestamp 类型不匹配
+        try:
+            current_ts = pd.Timestamp(current_time)
+        except Exception:
+            current_ts = pd.Timestamp(str(current_time))
+        try:
+            if pd.api.types.is_datetime64_any_dtype(full["date"]):
+                sliced = full[full["date"] <= current_ts]
+            else:
+                full_dates = pd.to_datetime(full["date"], errors="coerce")
+                sliced = full[full_dates <= current_ts]
+        except Exception as e:
+            from backend.core.logger import log
+            log.warning(f"[ctx.klines] 切片 {timeframe} 失败: {e}")
+            return full
+        if n is not None and n > 0 and len(sliced) > n:
+            sliced = sliced.tail(n)
+        return sliced
+
+    def series(self, timeframe: str, col: str = "close", n: int = None) -> pd.Series:
+        """返回截至当前 bar 时间的指定 timeframe + 列的 Series"""
+        return self.klines(timeframe, n)[col]
+
+    def now_tf(self, timeframe: str) -> float:
+        """返回指定 timeframe 最后一根的 close"""
+        return float(self.series(timeframe, "close", n=1).iloc[-1])
+
+    def ref_tf(self, timeframe: str, col: str = "close", n: int = 1):
+        """返回指定 timeframe 倒数第 n 根的 col 值 (n=1=上一根)"""
+        s = self.series(timeframe, col, n=n + 1)
+        if len(s) >= n + 1:
+            return s.iloc[-(n + 1)] if n > 0 else s.iloc[-1]
+        return None
+
+    def factor(self, factor_id: str, timeframe: str = None, n: int = None, **kwargs):
+        """在指定 timeframe 上跑因子, 返回 Series (截至当前 bar 时间)
+
+        Args:
+            factor_id: 因子 ID (大小写不敏感, 同 DSL)
+            timeframe: None = 主图, 否则为该 timeframe
+            n: K 线根数 (None = 全部截至当前)
+            **kwargs: 因子参数 (period, std, etc.)
+        """
+        if timeframe is None:
+            # 主图, 走原路径
+            return self.__getattr__(factor_id)(**kwargs)
+        # 多 timeframe 上下文
+        df = self.klines(timeframe, n)
+        if df.empty or len(df) < 2:
+            return pd.Series(dtype=float)
+        try:
+            return compute_factor(df, factor_id, kwargs)
+        except Exception as e:
+            from backend.core.logger import log
+            log.warning(f"[ctx.factor] {factor_id} on {timeframe} 失败: {e}")
+            return pd.Series(dtype=float)
+
+    def _load_timeframe(self, timeframe: str):
+        """从 cache / fetcher 拉取主图区间的额外 timeframe K 线"""
+        from backend.data.access import get_kline
+        # 用主图 df 的时间范围 + 一些 lookback buffer
+        if len(self._df_full) == 0:
+            self._tf_cache[timeframe] = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
+            return
+        start = str(self._df_full["date"].iloc[0])[:10].replace("-", "")
+        end = str(self._df_full["date"].iloc[-1])[:10].replace("-", "")
+        try:
+            tdf = get_kline(self._symbol, timeframe, start, end)
+        except Exception as e:
+            from backend.core.logger import log
+            log.warning(f"[sandbox] 加载 {self._symbol} {timeframe} 失败: {e}")
+            tdf = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
+        if tdf.empty:
+            tdf = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
+        self._tf_cache[timeframe] = tdf
 
     # ---- 当前 bar (单值) ----
     def now(self) -> float:    return float(self._row()["close"])
@@ -223,6 +338,7 @@ class PythonStrategy:
         self.code = code
         self._tree: ast.Module = None
         self._bytecode = None
+        self._funcs: dict = {}  # {"init": fn, "on_bar": fn} - 编译后填充
         self._validate()
 
     def _validate(self) -> None:
@@ -240,12 +356,20 @@ class PythonStrategy:
         self._bytecode = compile(self._tree, "<strategy>", "exec")
 
     def compile(self) -> dict:
-        """测试编译: 在干净沙箱里 exec 一次, 返回 {init_exists, on_bar_args}"""
+        """测试编译: 在干净沙箱里 exec 一次, 返回 {init_exists, on_bar_args}
+
+        同时缓存 _funcs 给外部 (如 live_trader) 使用 init() 拿初始 state
+        """
         sandbox = _build_globals({})
         try:
             exec(self._bytecode, sandbox)
         except Exception as e:
             raise ValueError(f"策略执行出错: {e}")
+        # 缓存函数引用, 方便外部 (live_trader) 调用
+        self._funcs = {
+            "init": sandbox.get("init"),
+            "on_bar": sandbox.get("on_bar"),
+        }
         return {
             "has_init": "init" in sandbox,
             "on_bar_args": [a for a in sandbox["on_bar"].__code__.co_varnames
@@ -253,18 +377,28 @@ class PythonStrategy:
         }
 
     def run(self, df: pd.DataFrame, capital: float = 10000.0,
-            commission_rate: float = None, slippage: float = None) -> dict:
+            commission_rate: float = None, slippage: float = None,
+            primary_symbol: str = "BTCUSDT", primary_timeframe: str = "1d",
+            ctx_data: dict = None) -> dict:
         """跑回测, 返回 {
             equity_curve: [{date, equity, cash, position_qty, position_avg, price}, ...],
             trades: [{date, side, price, qty, ...}, ...],
             actions: [{date, action, qty, price, ...}, ...],
             final_state: dict,
-        }"""
+        }
+
+        Args:
+            primary_symbol: 主图币种 (拉上下文 timeframe 时用)
+            primary_timeframe: 主图时间框架
+            ctx_data: 预加载的多 timeframe 数据 {tf: df} (回测入口已下载, 避免 ctx.klines 重复 IO)
+        """
         from backend.core import config as sys_config
         cr = commission_rate if commission_rate is not None else float(sys_config.get("backtest.commission_rate", 0.0004))
         sl = slippage if slippage is not None else float(sys_config.get("backtest.slippage", 0.0005))
 
-        ctx = _Context(df)
+        ctx = _Context(df, primary_symbol=primary_symbol,
+                       primary_timeframe=primary_timeframe,
+                       ctx_data=ctx_data or {})
 
         # 1) 先 exec 一次拿 init() 调用的 state
         init_sandbox = _build_globals({})

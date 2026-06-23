@@ -47,6 +47,8 @@ class CodeBacktestRequest(BaseModel):
     leverage: float = 1
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    context_timeframes: list = []
+    context_lookback: int = 20
 
 
 class FilterRequest(BaseModel):
@@ -115,8 +117,13 @@ def backtest_code(req: CodeBacktestRequest):
     t0 = _time.time()
     log.info(f"[API /backtest/code] symbol={req.symbol} tf={req.timeframe} type={req.code_type} code={len(req.code)} bytes")
     try:
+        # 把 context 参数合并到 params, 让 backtest_with_code 能拿到
+        params = dict(req.params or {})
+        if req.context_timeframes:
+            params["context_timeframes"] = req.context_timeframes
+            params["context_lookback"] = req.context_lookback
         result = backtest_service.backtest_with_code(
-            symbol=req.symbol, code=req.code, params=req.params,
+            symbol=req.symbol, code=req.code, params=params,
             timeframe=req.timeframe, start=req.start_date, end=req.end_date,
             code_type=req.code_type,
         )

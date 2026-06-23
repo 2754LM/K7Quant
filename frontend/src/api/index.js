@@ -40,7 +40,8 @@ export const updateStrategy = (id, data) => api.post('/strategy/update', { id, .
 export const deleteStrategy = (id) => api.delete(`/strategy/${id}`)
 export const getStrategyTemplates = () => api.get('/strategy/templates')
 export const getDslDocs = () => api.get('/strategy/dsl-docs')
-export const validateStrategyCode = (code, codeType = 'dsl') => api.post('/strategy/validate', { code, code_type: codeType })
+export const validateStrategyCode = (code, codeType = 'dsl', contextTimeframes = [], contextLookback = 20) =>
+  api.post('/strategy/validate', { code, code_type: codeType, context_timeframes: contextTimeframes, context_lookback: contextLookback })
 export const compilePython = (code) => api.post('/strategy/compile-python', { code })
 
 export const runBacktest = (data) => api.post('/backtest/single', data)
