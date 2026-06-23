@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, watch, nextTick, inject, onUnmounted } from 'vue'
+import { useTimeframes } from '../composables/useTimeframes'
 import { computeFactor, computeFactors, correlateFactors, rankFactors, listFactors,
   listRules, createRule, deleteRule, validateStrategyCode, createStrategy, getStrategies,
   createCustomFactor, deleteCustomFactor, getFactorDslDocs } from '../api'

@@ -3,8 +3,9 @@ import { ref, onMounted, computed, nextTick, inject } from 'vue'
 import {
   getStrategies, getStrategyTemplates, validateStrategyCode,
   createStrategy, deleteStrategy, updateStrategy, getDslDocs,
-  compilePython, getTimeframes,
+  compilePython,
 } from '../api'
+import { useTimeframes } from '../composables/useTimeframes'
 
 import StrategyPicker from '../components/StrategyPicker.vue'
 import StateView from '../components/StateView.vue'
@@ -17,8 +18,8 @@ const templates = ref({ builtin: [], blank_template: '' })
 const selectedId = ref(null)
 const editForm = ref({ name: '', description: '', category: 'custom', code: '', code_type: 'dsl', params_schema: {}, context_timeframes: [], context_lookback: 20 })
 
-// Binance 全集 timeframe (https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data)
-const TIMEFRAME_OPTIONS = ['1s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '3d', '1w', '1M']
+// 复用 useTimeframes (从后端 /api/data/timeframes 拉 Binance 白名单, 单一来源)
+const { list: TIMEFRAME_OPTIONS } = useTimeframes()
 
 // 上下文变量名预览 (DSL 模式)
 const ctxVarPreview = computed(() => {
@@ -306,15 +307,6 @@ function applyExample(ex) {
 
 onMounted(async () => {
   await load()
-  // 拉 Binance timeframe 白名单 (覆盖硬编码默认值)
-  try {
-    const tfsRes = await getTimeframes()
-    if (tfsRes?.data?.timeframes?.length) {
-      TIMEFRAME_OPTIONS.splice(0, TIMEFRAME_OPTIONS.length, ...tfsRes.data.timeframes)
-    }
-  } catch (e) {
-    console.warn('timeframes API 失败, 用本地默认值', e)
-  }
   // 原来用原生 fetch().data (拿不到数据), 改用已封装的 axios getDslDocs()
   try {
     dslDocs.value = (await getDslDocs()).data

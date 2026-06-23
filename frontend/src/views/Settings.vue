@@ -3,6 +3,9 @@ import { ref, computed, onMounted, inject } from 'vue'
 import { useMessage, NSelect, NSwitch, NInputNumber, NInput, NButton, NTag, NDivider } from 'naive-ui'
 import { updateBacktestConfig, updateDataSourceConfig, updateUiConfig, updateTradingConfig } from '../api'
 import { success as logSuccess, error as logError } from '../utils/systemLog'
+import { useTimeframes } from '../composables/useTimeframes'
+
+const { options: timeframeOptions } = useTimeframes()
 
 const cfg = inject('cfg')
 const reloadCfg = inject('reload')
@@ -28,13 +31,7 @@ const POSITION_MODE_OPTS = [
   { label: '满仓 (all_in)', value: 'all_in' },
   { label: '固定金额 (fixed_amount)', value: 'fixed_amount' },
 ]
-const TIMEFRAME_OPTS = [
-  { label: '1 分钟', value: '1m' }, { label: '5 分钟', value: '5m' },
-  { label: '15 分钟', value: '15m' }, { label: '30 分钟', value: '30m' },
-  { label: '1 小时', value: '1h' }, { label: '2 小时', value: '2h' },
-  { label: '4 小时', value: '4h' }, { label: '12 小时', value: '12h' },
-  { label: '1 天', value: '1d' }, { label: '3 天', value: '3d' }, { label: '1 周', value: '1w' },
-]
+
 const THEME_OPTS = [
   { label: '🌙 深色 (Binance 风格)', value: 'dark' },
   { label: '☀️ 浅色', value: 'light' },
@@ -159,7 +156,7 @@ function applyTooltips() {
         </div>
         <div class="form-row">
           <label>默认 K 线</label>
-          <n-select v-model:value="bt.default_timeframe" :options="TIMEFRAME_OPTS" />
+          <n-select v-model:value="bt.default_timeframe" :options="timeframeOptions" />
         </div>
         <div class="form-row">
           <label>默认开始日期</label>

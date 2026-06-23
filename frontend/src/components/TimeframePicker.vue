@@ -1,65 +1,55 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
+import { getTimeframes } from '../api'
 
 const props = defineProps({
   modelValue: String,
 })
 const emit = defineEmits(['update:modelValue', 'change'])
 
-// 预置按单位分组, 给每个加中文标签
-const GROUPS = [
-  {
-    label: '分钟', unit: 'm',
-    options: [
-      { v: '1m', label: '1分' }, { v: '3m', label: '3分' }, { v: '5m', label: '5分' },
-      { v: '15m', label: '15分' }, { v: '30m', label: '30分' },
-    ],
-  },
-  {
-    label: '小时', unit: 'h',
-    options: [
-      { v: '1h', label: '1时' }, { v: '2h', label: '2时' }, { v: '4h', label: '4时' },
-      { v: '6h', label: '6时' }, { v: '12h', label: '12时' },
-    ],
-  },
-  {
-    label: '天', unit: 'd',
-    options: [
-      { v: '1d', label: '1天' }, { v: '3d', label: '3天' },
-    ],
-  },
-  {
-    label: '周', unit: 'w',
-    options: [
-      { v: '1w', label: '1周' },
-    ],
-  },
-]
+// 从后端拉 Binance 白名单 (后端是 source of truth)
+const tfs = ref([])  // 全部 Binance tf
+const groups = ref([])  // 按单位分组
 
-// 全部预置值, 用于判断当前值是否在预置中
-const PRESETS = new Set(GROUPS.flatMap(g => g.options.map(o => o.v)))
+async function loadTimeframes() {
+  try {
+    const r = await getTimeframes()
+    const all = r?.data?.timeframes || []
+    tfs.value = all
+    groups.value = [
+      { label: '秒',  unit: 's', tfs: all.filter(t => t.endsWith('s')) },
+      { label: '分钟', unit: 'm', tfs: all.filter(t => t.endsWith('m')) },
+      { label: '小时', unit: 'h', tfs: all.filter(t => t.endsWith('h')) },
+      { label: '天',   unit: 'd', tfs: all.filter(t => t.endsWith('d')) },
+      { label: '周',   unit: 'w', tfs: all.filter(t => t.endsWith('w')) },
+      { label: '月',   unit: 'M', tfs: all.filter(t => t.endsWith('M')) },
+    ].filter(g => g.tfs.length > 0)
+  } catch (e) {
+    // 兜底 (用本地 Binance 白名单)
+    tfs.value = ['1m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d', '1w']
+    groups.value = [
+      { label: '分钟', unit: 'm', tfs: ['1m', '5m', '15m', '30m'] },
+      { label: '小时', unit: 'h', tfs: ['1h', '2h', '4h', '6h', '12h'] },
+      { label: '天',   unit: 'd', tfs: ['1d'] },
+      { label: '周',   unit: 'w', tfs: ['1w'] },
+    ]
+  }
+}
+loadTimeframes()
 
-// 自定义值
+const PRESETS = computed(() => new Set(tfs.value))
+
+// 自定义功能: 提示用户必须从 Binance 白名单选 (后端拒绝任意 tf)
 const showCustom = ref(false)
-const customValue = ref('')
-const customUnit = ref('m')
-const customNum = ref(15)
+const customValue = ref('')  // 用户输入的 tf 字符串
 
 watch(() => props.modelValue, (v) => {
   if (!v) return
-  if (PRESETS.has(v)) {
+  if (PRESETS.value.has(v)) {
     showCustom.value = false
   } else {
-    // 解析自定义值
-    const m = v.match(/^(\d+)([mhdw])$/)
-    if (m) {
-      showCustom.value = true
-      customNum.value = +m[1]
-      customUnit.value = m[2]
-    } else {
-      showCustom.value = true
-      customValue.value = v
-    }
+    showCustom.value = true
+    customValue.value = v
   }
 }, { immediate: true })
 
@@ -69,40 +59,38 @@ function select(tf) {
   emit('change', tf)
 }
 
-function applyCustom() {
-  const n = +customNum.value
-  if (n < 1) return
-  const tf = `${n}${customUnit.value}`
-  emit('update:modelValue', tf)
-  emit('change', tf)
+function isValidCustom(v) {
+  return PRESETS.value.has(v)
 }
 
-function openCustom() {
-  showCustom.value = true
+function applyCustom() {
+  if (!isValidCustom(customValue.value)) return
+  emit('update:modelValue', customValue.value)
+  emit('change', customValue.value)
 }
 </script>
 
 <template>
   <div class="tf-picker">
     <span class="lbl">K线</span>
-    <div v-for="g in GROUPS" :key="g.label" class="group">
+    <div v-for="g in groups" :key="g.label" class="group">
       <span class="glbl">{{ g.label }}</span>
-      <button v-for="o in g.options" :key="o.v"
-        :class="{ active: modelValue === o.v && !showCustom }"
-        @click="select(o.v)" :title="`${o.label} (${o.v})`">{{ o.label }}</button>
+      <button v-for="tf in g.tfs" :key="tf"
+        :class="{ active: modelValue === tf && !showCustom }"
+        @click="select(tf)" :title="tf">{{ tf }}</button>
     </div>
     <div class="group custom-grp">
       <button class="custom-btn" :class="{ active: showCustom }"
-        @click="openCustom" title="自定义周期">自定义</button>
+        @click="showCustom = !showCustom" title="查看/输入自定义 Binance 周期">自定义</button>
       <div v-if="showCustom" class="custom-editor">
-        <input type="number" v-model.number="customNum" min="1" max="999" />
-        <select v-model="customUnit">
-          <option value="m">分</option>
-          <option value="h">时</option>
-          <option value="d">天</option>
-          <option value="w">周</option>
-        </select>
-        <button class="apply" @click="applyCustom">应用</button>
+        <input type="text" v-model="customValue" placeholder="如 4h / 15m"
+          @keyup.enter="applyCustom" />
+        <span v-if="customValue && !isValidCustom(customValue)" class="err">
+          ✗ 非 Binance 周期
+        </span>
+        <span v-else-if="customValue" class="ok">✓</span>
+        <button class="apply" :disabled="!isValidCustom(customValue)"
+          @click="applyCustom">应用</button>
       </div>
     </div>
   </div>
@@ -164,7 +152,7 @@ function openCustom() {
   padding: 6px 8px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.3);
 }
-.custom-editor input, .custom-editor select {
+.custom-editor input {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
@@ -172,10 +160,9 @@ function openCustom() {
   border-radius: 4px;
   font-size: 12px;
   font-family: 'Consolas', monospace;
-  width: 60px;
+  width: 100px;
 }
-.custom-editor select { width: 50px; }
-.custom-editor input:focus, .custom-editor select:focus { border-color: var(--yellow); outline: none; }
+.custom-editor input:focus { border-color: var(--yellow); outline: none; }
 .custom-editor .apply {
   background: var(--yellow);
   color: #000;
@@ -183,4 +170,11 @@ function openCustom() {
   font-size: 12px;
   font-weight: 600;
 }
+.custom-editor .apply:disabled {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+.custom-editor .err { color: var(--red); font-size: 11px; }
+.custom-editor .ok { color: var(--green); font-size: 13px; font-weight: 600; }
 </style>

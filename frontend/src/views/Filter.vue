@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, inject } from 'vue'
+import { useTimeframes } from '../composables/useTimeframes'
 import { filterSymbols, getStrategies } from '../api'
 
 import StateView from '../components/StateView.vue'

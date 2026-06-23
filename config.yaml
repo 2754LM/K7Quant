@@ -23,20 +23,9 @@ backtest:
   default_timeframe: 4h
   start_date: '20240101'
   end_date: auto
-timeframes:
-- 1m
-- 3m
-- 5m
-- 15m
-- 30m
-- 1h
-- 2h
-- 4h
-- 6h
-- 12h
-- 1d
-- 3d
-- 1w
+# timeframes 字段从 Binance 白名单自动派生 (后端 /api/data/timeframes)
+# 不再硬编码, 如需调整显示顺序可在这里覆盖
+# timeframes: []
 ui:
   theme: dark
   show_help_tooltips: true

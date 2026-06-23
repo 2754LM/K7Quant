@@ -23,6 +23,7 @@ import { formatClock } from '../utils/time-label'
 import { syncAccountEquityIndicator } from '../utils/account-equity-indicator'
 import { syncTradeOverlays } from '../utils/trade-overlays'
 import StateView from '../components/StateView.vue'
+import { useTimeframes } from '../composables/useTimeframes'
 
 // ---- 状态 ----
 const conn = ref({})
@@ -63,7 +64,7 @@ const resetReport = ref(null)              // 执行后战报; null 时弹窗显
 const strategies = ref([])
 const live = ref({ running: false, logs: [] })
 const liveForm = reactive({ strategyId: null, symbol: 'BTCUSDT', timeframe: '1h' })
-const liveTimeframes = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d']
+const { list: liveTimeframes } = useTimeframes()  // 从后端 Binance 白名单拉
 const showLiveConfirm = ref(false)
 const liveStarting = ref(false)
 const liveStopping = ref(false)

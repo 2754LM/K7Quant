@@ -3,14 +3,29 @@ import numpy as np
 import pandas as pd
 
 from backend.core import config as sys_config
+from backend.data.fetcher import BINANCE_TIMEFRAMES
 
 
-# 不同 K 线年化系数
-BARS_PER_YEAR = {
-    "1m": 525600, "3m": 175200, "5m": 105120, "15m": 35040,
-    "30m": 17520, "1h": 8760, "2h": 4380, "4h": 2190, "6h": 1460,
-    "8h": 1095, "12h": 730, "1d": 365, "1w": 52, "1M": 12,
-}
+# 不同 K 线年化系数 (从 Binance 白名单派生, 单一来源)
+# 公式: SECONDS_PER_YEAR / 1 根 K 线秒数
+SECONDS_PER_YEAR = 365 * 24 * 3600  # 月按 30 天近似
+
+
+def _seconds_per_bar(tf: str) -> int:
+    """把 Binance tf 转每根 K 线的秒数"""
+    n = int(tf[:-1]) if tf[:-1].isdigit() else 1
+    unit = tf[-1]
+    if unit == "s": return n
+    if unit == "m": return n * 60
+    if unit == "h": return n * 3600
+    if unit == "d": return n * 86400
+    if unit == "w": return n * 86400 * 7
+    if unit == "M": return n * 86400 * 30  # 月近似 30 天
+    return 1
+
+
+BARS_PER_YEAR = {tf: SECONDS_PER_YEAR // _seconds_per_bar(tf)
+                 for tf in sorted(BINANCE_TIMEFRAMES)}
 
 
 class Backtester:

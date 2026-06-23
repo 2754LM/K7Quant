@@ -8,8 +8,16 @@ import yaml
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.yaml"
 
-# 默认配置
-DEFAULTS = {
+
+def _binance_timeframes():
+    """从 fetcher 拿 Binance 白名单 (作为单一 source of truth)"""
+    # 延后导入避免循环 (config.py 被 fetcher.py 反向引用)
+    from backend.data.fetcher import BINANCE_TIMEFRAMES
+    return sorted(BINANCE_TIMEFRAMES)
+
+
+# 默认配置 (timeframes 字段延后填充, 避免循环导入)
+DEFAULTS_TEMPLATE = {
     "server": {
         "host": "127.0.0.1",
         "port": 8765,
@@ -42,7 +50,8 @@ DEFAULTS = {
         "start_date": "20240101",
         "end_date": "auto",
     },
-    "timeframes": ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "3d", "1w"],
+    # 前端 UI 时间框架下拉 (从 Binance 白名单派生, 单一来源)
+    "timeframes": None,  # ← 由 _build_defaults() 动态填充
     "ui": {
         "theme": "dark",              # dark / light
         "show_help_tooltips": True,   # 全局问号提示开关
@@ -60,6 +69,17 @@ DEFAULTS = {
 }
 
 
+# DEFAULTS 用模板 + 懒填充 timeframes 字段 (避免模块加载时 config<->fetcher 循环)
+DEFAULTS = copy.deepcopy(DEFAULTS_TEMPLATE)
+DEFAULTS["timeframes"] = None  # 占位, 首次访问时填充
+
+
+def _ensure_defaults_timeframes():
+    """懒填充 DEFAULTS.timeframes (首次 get("timeframes") 时调用, 此时 fetcher 已加载)"""
+    if DEFAULTS.get("timeframes") is None:
+        DEFAULTS["timeframes"] = _binance_timeframes()
+
+
 _cached: dict = {}
 
 
@@ -69,6 +89,8 @@ def load_config(path: Path = None) -> dict:
     if _cached:
         return _cached
 
+    # 懒填充 timeframes (Binance 白名单, 后端唯一 source of truth)
+    _ensure_defaults_timeframes()
     cfg = copy.deepcopy(DEFAULTS)
 
     p = path or CONFIG_PATH
@@ -76,6 +98,9 @@ def load_config(path: Path = None) -> dict:
         with open(p, "r", encoding="utf-8") as f:
             user_cfg = yaml.safe_load(f) or {}
         _deep_merge(cfg, user_cfg)
+    # 兜底: 如果 cfg.timeframes 仍为 None (用户清空了), 用白名单
+    if cfg.get("timeframes") is None:
+        cfg["timeframes"] = _binance_timeframes()
     _cached = cfg
     return cfg
 
@@ -92,6 +117,9 @@ def save_config(cfg: dict, path: Path = None):
 
 def get(path: str, default: Any = None) -> Any:
     """点路径取值: get('backtest.commission_rate')"""
+    # 懒填充 timeframes (Binance 白名单, 后端唯一 source of truth)
+    if path == "timeframes" or path.startswith("timeframes."):
+        _ensure_defaults_timeframes()
     cfg = load_config()
     cur: Any = cfg
     for k in path.split("."):

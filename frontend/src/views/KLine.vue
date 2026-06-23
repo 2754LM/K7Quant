@@ -4,6 +4,7 @@ import { getKline } from '../api'
 import * as echarts from 'echarts'
 import { subscribeKline, closeAllStreams } from '../utils/binance-ws'
 import { tfLabel } from '../utils/timeframe'
+import { useTimeframes } from '../composables/useTimeframes'
 
 const cfg = inject('cfg')
 
@@ -14,7 +15,7 @@ const symbolInfo = computed(() => {
   return m
 })
 const allSymbols = computed(() => (cfg.value?.symbols || []).map(s => s.symbol))
-const timeframes = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
+const { list: timeframes } = useTimeframes()  // 从后端拉 Binance 白名单
 const MA_COLORS = ['#9b59b6', '#3498db', '#e67e22', '#f1c40f', '#f0b90b', '#e74c3c', '#1abc9c', '#16a085']
 
 // ============ 面板系统 ============

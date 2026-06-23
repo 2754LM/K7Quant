@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
+import { useTimeframes } from '../composables/useTimeframes'
 import { scanPool, runBacktest, backtestCode, validateStrategyCode, createStrategy } from '../api'
 import * as echarts from 'echarts'
 
