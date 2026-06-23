@@ -22,12 +22,14 @@ class SafeFormatter(logging.Formatter):
 
 def setup_logger(name: str = "k7quant", level: int = logging.INFO,
                  log_file: str = "app.log") -> logging.Logger:
-    """获取或创建 logger (避免重复 handler)"""
+    """获取或创建 logger (避免重复 handler + 避免向上传到 root)"""
     logger = logging.getLogger(name)
     if logger.handlers:
         return logger
 
     logger.setLevel(level)
+    # 关键: 阻止 propagate, 避免日志被 root logger 再写一次 (uvicorn 给 root 装了 handler 会双写)
+    logger.propagate = False
     formatter = SafeFormatter(_LOG_FORMAT, _DATE_FORMAT)
 
     ch = logging.StreamHandler(sys.stdout)

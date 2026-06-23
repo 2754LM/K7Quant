@@ -40,6 +40,23 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _coerce_pct(rule_value, config_key: str) -> float:
+    """止损/止盈取值: 优先用策略里显式声明的值 (即使是 0 = 不设止损),
+    策略未声明时回落到 sys_config, 都没有才返回 0。
+    用 `is None` 而不是 `or` 避免 0 被当 falsy 跳掉。
+    """
+    if rule_value is not None:
+        try:
+            return float(rule_value)
+        except (TypeError, ValueError):
+            return 0.0
+    cfg = sys_config.get(config_key, 0)
+    try:
+        return float(cfg) if cfg is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _base_asset(symbol: str) -> str:
     s = symbol.upper()
     return s[:-4] if s.endswith("USDT") else s
@@ -152,12 +169,17 @@ class LiveTrader:
                     self._py_capital = float(
                         (params or {}).get("capital") or sys_config.get("backtest.initial_capital", 10000)
                     )
-                    # Python 模式的止损止盈/仓位从 config 取
+                    # Python 模式的止损止盈/仓位从 config 取 (Python 策略一般没有
+                    # DSL 那样的止损= 语法, 所以这里直接用 config; 0 表示不设)。
                     rules = {
                         "stop_loss": float(sys_config.get("trading.stop_loss_pct", 0) or 0),
                         "take_profit": float(sys_config.get("trading.take_profit_pct", 0) or 0),
                         "position_size": float(sys_config.get("trading.max_position_pct", 1.0) or 1.0),
                     }
+                    # 但用户可能通过 params 传入 stop_loss / take_profit 显式覆盖
+                    for k in ("stop_loss", "take_profit", "position_size"):
+                        if k in (params or {}):
+                            rules[k] = float(params[k])
                 else:
                     self._py_runner = None
                     self._py_state = None
@@ -182,8 +204,8 @@ class LiveTrader:
             self.symbol = symbol.upper()
             self.timeframe = timeframe
             self.params = params or {}
-            self.stop_loss = float(rules.get("stop_loss") or sys_config.get("trading.stop_loss_pct", 0) or 0)
-            self.take_profit = float(rules.get("take_profit") or sys_config.get("trading.take_profit_pct", 0) or 0)
+            self.stop_loss = _coerce_pct(rules.get("stop_loss"), "trading.stop_loss_pct")
+            self.take_profit = _coerce_pct(rules.get("take_profit"), "trading.take_profit_pct")
             self.position_size = float(rules.get("position_size") or 1.0)
             self.code_type = self._code_type
             self.context_timeframes = list(self._ctx_tfs)
