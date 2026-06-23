@@ -80,6 +80,7 @@ export const listExchangeSymbols = () => api.get('/data/exchange-symbols')
 export const testConnection = () => api.get('/data/test-connection')
 export const getExchangeInfo = (symbol) => api.get(`/data/exchange-info/${symbol}`)
 export const getTimeframes = () => api.get('/data/timeframes')
+export const tailLogs = (lines = 50, offset = 0) => api.get('/data/logs/tail', { params: { lines, offset } })
 
 export const getSystemConfig = () => api.get('/config')
 export const updateBacktestConfig = (data) => api.put('/config/backtest', data)

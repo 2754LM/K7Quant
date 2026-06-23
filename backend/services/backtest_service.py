@@ -542,9 +542,14 @@ def _benchmark(start, end, timeframe):
 
 
 def _save_chart(equity_df, benchmark_df, title, name):
+    """生成净值图 base64; matplotlib 失败不影响回测主流程"""
     os.makedirs(EXPORT_DIR, exist_ok=True)
     chart_path = os.path.join(EXPORT_DIR, f"{name}.png")
-    return plot_equity(equity_df, benchmark_df, title, save_path=chart_path)
+    try:
+        return plot_equity(equity_df, benchmark_df, title, save_path=chart_path)
+    except Exception as e:
+        log.warning(f"[_save_chart] matplotlib 失败 (不影响回测): {e}")
+        return ""
 
 
 def _ranking_row(sym, m):

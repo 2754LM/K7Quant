@@ -14,16 +14,21 @@ from backend.core.logger import log
 
 # Binance 全集 timeframe (https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data)
 # 1s 仅现货部分端点支持, 这里列出所有标准 interval
-BINANCE_TIMEFRAMES = {
-    "1s", "1m", "3m", "5m", "15m", "30m",
+# 顺序按 Binance 官方文档: 秒 → 分 → 时 → 日 → 周 → 月, 内部按数值递增
+BINANCE_TIMEFRAMES = [
+    "1s",
+    "1m", "3m", "5m", "15m", "30m",
     "1h", "2h", "4h", "6h", "8h", "12h",
-    "1d", "3d", "1w", "1M",
-}
+    "1d", "3d",
+    "1w",
+    "1M",
+]
+BINANCE_TIMEFRAMES_SET = set(BINANCE_TIMEFRAMES)
 
 
 def is_valid_timeframe(tf: str) -> bool:
     """检查是否是 Binance 支持的 timeframe"""
-    return tf in BINANCE_TIMEFRAMES
+    return tf in BINANCE_TIMEFRAMES_SET
 
 
 class BinanceFetcher:
@@ -79,7 +84,7 @@ class BinanceFetcher:
         if not is_valid_timeframe(interval):
             raise ValueError(
                 f"不支持的 timeframe: {interval!r}. "
-                f"Binance 支持: {sorted(BINANCE_TIMEFRAMES)}"
+                f"Binance 支持: {list(BINANCE_TIMEFRAMES)}"
             )
         rows = []
         while True:

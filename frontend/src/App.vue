@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, provide, defineAsyncComponent } 
 import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme } from 'naive-ui'
 import { getConfig, listSymbols, getStrategies } from './api'
 import SystemLogPanel from './components/SystemLogPanel.vue'
+import { _startBackendLogPolling, _stopBackendLogPolling, info as logInfo } from './utils/systemLog'
 
 // 视图懒加载: 各 Tab 按需加载, 减小初始 bundle
 // 注: defineAsyncComponent 必须在 setup 顶部, 否则 Vite 不会做 chunk 拆分
@@ -96,8 +97,14 @@ function navigate(event) {
 onMounted(() => {
   reloadCfg()
   window.addEventListener('navigate', navigate)
+  // 后端日志轮询: 拉 logs/app.log 最近行, 解析后塞进 systemLog
+  _startBackendLogPolling(3000)
+  logInfo('system', '前端启动, 后端日志轮询已开启 (3s)')
 })
-onUnmounted(() => window.removeEventListener('navigate', navigate))
+onUnmounted(() => {
+  window.removeEventListener('navigate', navigate)
+  _stopBackendLogPolling()
+})
 </script>
 
 <template>

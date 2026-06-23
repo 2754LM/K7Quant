@@ -121,7 +121,7 @@ class LiveTrader:
         self._log(f"⚠️ {msg}")
 
     # ---- 控制 ----
-    def start(self, strategy_id: int, symbol: str, timeframe: str, params: dict = None) -> dict:
+    def start(self, strategy_id: int, symbol: str, timeframe: str = "1m", params: dict = None) -> dict:
         blocked = _guard_simulation()
         if blocked:
             return blocked

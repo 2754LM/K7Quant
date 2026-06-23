@@ -10,10 +10,12 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.yaml"
 
 
 def _binance_timeframes():
-    """从 fetcher 拿 Binance 白名单 (作为单一 source of truth)"""
+    """从 fetcher 拿 Binance 白名单 (作为单一 source of truth)
+    按 Binance 官方顺序 (秒/分/时/日/周/月), 不是字母序
+    """
     # 延后导入避免循环 (config.py 被 fetcher.py 反向引用)
     from backend.data.fetcher import BINANCE_TIMEFRAMES
-    return sorted(BINANCE_TIMEFRAMES)
+    return list(BINANCE_TIMEFRAMES)
 
 
 # 默认配置 (timeframes 字段延后填充, 避免循环导入)

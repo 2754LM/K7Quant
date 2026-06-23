@@ -44,15 +44,12 @@ function applyDefaultFromSettings() {
   if (settingsApplied.value) return  // 只在初始化时套用一次, 避免覆盖用户的修改
   if (!cfg.value?.settings?.backtest) return
   const bt = cfg.value.settings.backtest
-  // 只有用户明确设置过 settings.backtest.start_date 才覆盖
-  // 否则保持空, 由 DateRangePicker 按 timeframe 智能选默认
-  if (bt.start_date) params.value.start_date = bt.start_date
-  if (bt.end_date === 'auto' || !bt.end_date) {
-    params.value.end_date = todayStr()
-  } else {
+  // 只有 end_date 设置 'auto' 才用今天, 其他情况由 DateRangePicker 智能默认
+  if (bt.end_date && bt.end_date !== 'auto') {
     params.value.end_date = bt.end_date
   }
   if (bt.default_timeframe) params.value.timeframe = bt.default_timeframe
+  // 不预填 start_date: 让 DateRangePicker 按 timeframe 智能选默认区间 (1m/3m/6m/2y)
   settingsApplied.value = true
 }
 watch(() => cfg.value?.settings?.backtest, applyDefaultFromSettings, { immediate: true, deep: true })

@@ -25,7 +25,7 @@ def _seconds_per_bar(tf: str) -> int:
 
 
 BARS_PER_YEAR = {tf: SECONDS_PER_YEAR // _seconds_per_bar(tf)
-                 for tf in sorted(BINANCE_TIMEFRAMES)}
+                 for tf in BINANCE_TIMEFRAMES}
 
 
 class Backtester:
@@ -214,6 +214,7 @@ def plot_equity(equity_df: pd.DataFrame, benchmark_df: pd.DataFrame = None,
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
 
     plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "Arial Unicode MS", "DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
@@ -222,14 +223,25 @@ def plot_equity(equity_df: pd.DataFrame, benchmark_df: pd.DataFrame = None,
     fig.patch.set_facecolor("#181a20")
     ax.set_facecolor("#181a20")
 
+    # 把 date 列强制转成 datetime64 (避免 Categorical / object 类型导致 matplotlib 报错)
+    def _to_dt(s):
+        return pd.to_datetime(s, errors="coerce").dt.tz_localize(None)
+
     eq_norm = equity_df["equity"] / equity_df["equity"].iloc[0]
-    ax.plot(equity_df["date"], eq_norm, label="策略", linewidth=2, color="#f0b90b")
-    ax.fill_between(equity_df["date"], eq_norm, alpha=0.08, color="#f0b90b")
+    x_dates = _to_dt(equity_df["date"])
+    ax.plot(x_dates, eq_norm, label="策略", linewidth=2, color="#f0b90b")
+    ax.fill_between(x_dates, eq_norm, alpha=0.08, color="#f0b90b")
 
     if benchmark_df is not None and not benchmark_df.empty:
         bm = benchmark_df.copy()
         bm["norm"] = bm["close"] / bm["close"].iloc[0]
-        ax.plot(bm["date"], bm["norm"], label="BTC", linewidth=1.5, alpha=0.6, color="#f7931a")
+        bm_dates = _to_dt(bm["date"])
+        ax.plot(bm_dates, bm["norm"], label="BTC", linewidth=1.5, alpha=0.6, color="#f7931a")
+
+    # x 轴日期格式化
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    fig.autofmt_xdate()
 
     ax.set_title(title, fontsize=14, color="#eaecef")
     ax.set_xlabel("Date", color="#b7bdc6")

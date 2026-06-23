@@ -63,8 +63,9 @@ const resetReport = ref(null)              // 执行后战报; null 时弹窗显
 // ---- 策略实盘 ----
 const strategies = ref([])
 const live = ref({ running: false, logs: [] })
-const liveForm = reactive({ strategyId: null, symbol: 'BTCUSDT', timeframe: '1h' })
-const { list: liveTimeframes } = useTimeframes()  // 从后端 Binance 白名单拉
+// 实盘周期固定 1m (主订阅 tf, 走 WebSocket 实时行情)
+// 用户改周期请改策略里的 context_timeframes
+const liveForm = reactive({ strategyId: null, symbol: 'BTCUSDT' })
 const showLiveConfirm = ref(false)
 const liveStarting = ref(false)
 const liveStopping = ref(false)
@@ -781,13 +782,13 @@ async function confirmLiveStart() {
     const r = await startLive({
       strategy_id: liveForm.strategyId,
       symbol: liveForm.symbol,
-      timeframe: liveForm.timeframe,
+      timeframe: "1m",
       params: {},
     })
     if (r.data?.ok) {
       live.value = r.data.status || live.value
       showLiveConfirm.value = false
-      flash('success', `已启动: ${selectedStrategyName.value} · ${liveForm.symbol} · ${liveForm.timeframe}`)
+      flash('success', `已启动: ${selectedStrategyName.value} · ${liveForm.symbol}`)
     } else {
       flash('error', r.data?.error || '启动失败')
     }
@@ -1159,7 +1160,7 @@ onBeforeUnmount(() => {
           策略实盘
           <span class="live-badge" :class="live.running ? 'on' : 'off'">{{ live.running ? '运行中' : '未运行' }}</span>
         </h3>
-        <span v-if="live.running">{{ live.symbol }} · {{ live.timeframe }} · 刷新 {{ clock(lastDataRefreshAt) }}</span>
+        <span v-if="live.running">{{ live.symbol }} · 刷新 {{ clock(lastDataRefreshAt) }}</span>
       </div>
 
       <!-- 未运行: 配置 + 启动 -->
@@ -1175,11 +1176,6 @@ onBeforeUnmount(() => {
         <label>标的
           <select v-model="liveForm.symbol">
             <option v-for="s in symbols" :key="s.symbol" :value="s.symbol">{{ s.symbol }}</option>
-          </select>
-        </label>
-        <label>周期
-          <select v-model="liveForm.timeframe">
-            <option v-for="tf in liveTimeframes" :key="tf" :value="tf">{{ tf }}</option>
           </select>
         </label>
         <button class="btn submit buy live-start" :disabled="!connected || !liveForm.strategyId || liveStarting"
@@ -1390,7 +1386,7 @@ onBeforeUnmount(() => {
         <p class="reset-sub">将在 Binance 沙盒账户上按策略信号自动下真实市价单:</p>
         <ul class="reset-plan">
           <li>策略 · <b>{{ selectedStrategyName }}</b></li>
-          <li>标的 / 周期 · <b>{{ liveForm.symbol }} / {{ liveForm.timeframe }}</b></li>
+          <li>标的 · <b>{{ liveForm.symbol }}</b></li>
           <li>每根 K 线收盘评估信号, 持有 ↔ 空仓 自动切换</li>
           <li>止损止盈按策略 DSL 执行 (仅运行期间生效)</li>
         </ul>

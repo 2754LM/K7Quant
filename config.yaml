@@ -10,7 +10,7 @@ data_source:
   timeout: 5
   retries: 1
   proxy:
-    enabled: true
+    enabled: false
     http: ''
     https: ''
 backtest:

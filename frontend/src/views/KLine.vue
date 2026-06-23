@@ -74,64 +74,8 @@ function addPanel() {
   })
 }
 
-// 复制面板 (设置相同)
-function duplicatePanel(id) {
-  const src = panels.value.find(x => x.id === id)
-  if (!src) return
-  const np = makePanel(panels.value.length, {
-    symbol: src.symbol,
-    timeframe: src.timeframe,
-    indicators: src.indicators,
-  })
-  const idx = panels.value.findIndex(x => x.id === id)
-  panels.value.splice(idx + 1, 0, np)
-  registerPanelWatchers(np)
-  nextTick(() => {
-    applySmartDefault(np)
-    loadPanel(np)
-  })
-}
-
-function closePanel(id) {
-  if (panels.value.length <= 1) return
-  const p = panels.value.find(x => x.id === id)
-  if (p?.wsUnsub) p.wsUnsub()
-  if (p?.chart) { try { p.chart.dispose() } catch {} }
-  panels.value = panels.value.filter(x => x.id !== id)
-}
-
-// 拖拽排序
-const dragOverPanelId = ref(null)
-function onDragStart(e, panel) {
-  e.dataTransfer.effectAllowed = 'move'
-  e.dataTransfer.setData('text/plain', panel.id)
-  e.currentTarget.classList.add('dragging')
-}
-function onDragEnd(e) {
-  e.currentTarget.classList.remove('dragging')
-  dragOverPanelId.value = null
-}
-function onDragOver(e, panel) {
-  e.preventDefault()
-  e.dataTransfer.dropEffect = 'move'
-  dragOverPanelId.value = panel.id
-}
-function onDrop(e, target) {
-  e.preventDefault()
-  const draggedId = e.dataTransfer.getData('text/plain')
-  dragOverPanelId.value = null
-  if (!draggedId || draggedId === target.id) return
-  const fromIdx = panels.value.findIndex(p => p.id === draggedId)
-  const toIdx = panels.value.findIndex(p => p.id === target.id)
-  if (fromIdx < 0 || toIdx < 0) return
-  // 关掉两个 panel 的 ws (重排后 chart DOM 会变, 需要 dispose)
-  const dragged = panels.value[fromIdx]
-  if (dragged.wsUnsub) { dragged.wsUnsub(); dragged.wsUnsub = null }
-  if (dragged.chart) { try { dragged.chart.dispose() } catch {} ; dragged.chart = null }
-  const [moved] = panels.value.splice(fromIdx, 1)
-  panels.value.splice(toIdx, 0, moved)
-  nextTick(() => loadPanel(moved))
-}
+// 单 panel 模式: 通过顶部 "添加面板" 按钮新增 (复制最后一个设置)
+// 没有拖动排序/复制/关闭, 避免和 ECharts dataZoom 冲突
 
 // ============ 智能默认日期 ============
 function applySmartDefault(p) {
@@ -598,9 +542,6 @@ function setDatePreset(p, preset) {
   <div class="kline-multipanel">
     <!-- 顶部: 添加面板 + 总览 -->
     <div class="topbar">
-      <div class="topbar-left">
-        <span class="hint">拖动卡片顶部 ⋮⋮ 排序, 点 📋 复制当前设置, 点 × 关闭</span>
-      </div>
       <div class="topbar-right">
         <button class="add-panel-btn" @click="addPanel" title="新增一个面板 (复制最后一个的设置)">
           ➕ 添加面板
@@ -611,23 +552,8 @@ function setDatePreset(p, preset) {
     <!-- 自由堆叠的卡片列表 -->
     <div class="panels-stack">
       <div v-for="(p, idx) in panels" :key="p.id" class="panel-card"
-        :class="{ 'drag-over': dragOverPanelId === p.id, 'single': panels.length === 1 }"
-        @dragover.prevent="onDragOver($event, p)"
-        @drop="onDrop($event, p)">
-        <!-- 拖动手柄 + 标题栏 (只有手柄 draggable, 不影响图表区域拖动缩放) -->
-        <div class="panel-head">
-          <span class="drag-handle"
-            draggable="true"
-            @dragstart.stop="onDragStart($event, p)"
-            @dragend="onDragEnd($event)"
-            title="拖动排序">⋮⋮</span>
-          <span class="panel-idx">#{{ idx + 1 }}</span>
-          <span class="panel-actions-mini">
-            <button class="mini-icon-btn" @click="duplicatePanel(p.id)" title="复制当前设置新增面板">📋</button>
-            <button v-if="panels.length > 1" class="mini-icon-btn close" @click="closePanel(p.id)" title="关闭面板">×</button>
-          </span>
-        </div>
-        <!-- Panel 工具栏 -->
+        :class="{ single: panels.length === 1 }">
+        <!-- Panel 工具栏 (无拖动/复制/关闭按钮, 用顶部"添加面板"新增) -->
         <div class="panel-toolbar">
           <div class="pt-row1">
             <select v-model="p.symbol" class="symbol-sel" @change="loadPanel(p)">
@@ -642,7 +568,6 @@ function setDatePreset(p, preset) {
               <span class="dot" :class="{ pulse: p.live }"></span>
               {{ p.live ? 'LIVE' : '实时' }}
             </button>
-            <button class="close-btn" v-if="panels.length > 1" @click="closePanel(p.id)" title="关闭面板">×</button>
           </div>
           <div class="pt-row2">
             <span class="date-presets">
@@ -797,35 +722,7 @@ function setDatePreset(p, preset) {
   transition: border-color 0.15s, transform 0.15s;
 }
 .panel-card:hover { border-color: rgba(240,185,11,0.3); }
-.panel-card.dragging { opacity: 0.4; transform: scale(0.98); }
-.panel-card.drag-over { border-top: 3px solid var(--yellow); }
 .panel-card.single { min-height: 500px; }
-
-/* Panel 头部: 拖动手柄 + 序号 + 操作 */
-.panel-head {
-  display: flex; align-items: center; gap: 8px;
-  padding-bottom: 4px; border-bottom: 1px dashed var(--border);
-}
-.drag-handle {
-  cursor: grab; color: var(--text-muted);
-  font-size: 14px; user-select: none;
-  letter-spacing: -2px; padding: 2px 4px;
-}
-.drag-handle:hover { color: var(--yellow); }
-.drag-handle:active { cursor: grabbing; }
-.panel-idx {
-  font-size: 11px; color: var(--text-muted);
-  font-family: 'Consolas', monospace;
-}
-.panel-actions-mini { margin-left: auto; display: flex; gap: 4px; }
-.mini-icon-btn {
-  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
-  width: 22px; height: 22px; border-radius: 4px;
-  font-size: 12px; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-}
-.mini-icon-btn:hover { border-color: var(--yellow); color: var(--yellow); }
-.mini-icon-btn.close:hover { border-color: var(--red); color: var(--red); }
 
 /* clamp 提示 */
 .clamp-banner {
