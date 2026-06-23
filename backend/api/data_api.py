@@ -29,6 +29,13 @@ def exchange_info(symbol: str):
     return get_fetcher().get_symbol_info(symbol)
 
 
+@router.get("/timeframes")
+def list_timeframes():
+    """Binance 支持的 timeframe 白名单 (前端 UI 用)"""
+    from backend.data.fetcher import BINANCE_TIMEFRAMES
+    return {"timeframes": sorted(BINANCE_TIMEFRAMES)}
+
+
 @router.get("/test-connection")
 def test_connection():
     # 包一层 binance, 与前端 DataPanel 读取的 res.data.binance 对齐

@@ -12,6 +12,20 @@ from backend.core import config as sys_config
 from backend.core.logger import log
 
 
+# Binance 全集 timeframe (https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data)
+# 1s 仅现货部分端点支持, 这里列出所有标准 interval
+BINANCE_TIMEFRAMES = {
+    "1s", "1m", "3m", "5m", "15m", "30m",
+    "1h", "2h", "4h", "6h", "8h", "12h",
+    "1d", "3d", "1w", "1M",
+}
+
+
+def is_valid_timeframe(tf: str) -> bool:
+    """检查是否是 Binance 支持的 timeframe"""
+    return tf in BINANCE_TIMEFRAMES
+
+
 class BinanceFetcher:
     BASE_URL = "https://api.binance.com"
 
@@ -62,6 +76,11 @@ class BinanceFetcher:
     def klines(self, symbol: str, interval: str,
                start_ms: Optional[int] = None, end_ms: Optional[int] = None) -> list:
         """分页拉 K 线"""
+        if not is_valid_timeframe(interval):
+            raise ValueError(
+                f"不支持的 timeframe: {interval!r}. "
+                f"Binance 支持: {sorted(BINANCE_TIMEFRAMES)}"
+            )
         rows = []
         while True:
             params = {"symbol": symbol.upper(), "interval": interval, "limit": 1000}
