@@ -1,8 +1,8 @@
-import unittest
+﻿import unittest
 
 import pandas as pd
 
-from backend.common.data import access
+from backend.repositories import binance_data as access
 
 
 def make_df(dates):

@@ -1,4 +1,4 @@
-"""多 timeframe 上下文数据: 给 Python 沙箱和 DSL 编译用
+﻿"""多 timeframe 上下文数据: 给 Python 沙箱和 DSL 编译用
 
 ctx_series 设计:
   - 对每个 context timeframe (如 "15m", "1h"), 拉取主图区间内的 K 线
@@ -53,8 +53,8 @@ def build_ctx_series(
     start = str(main_df["date"].iloc[0])[:10].replace("-", "")
     end = str(main_df["date"].iloc[-1])[:10].replace("-", "")
 
-    from backend.common.data.access import get_kline
-    from backend.core.logger import log
+    from backend.repositories.binance_data import get_kline
+    from backend.core.logging import log
 
     for tf in context_timeframes:
         if tf == primary_timeframe:

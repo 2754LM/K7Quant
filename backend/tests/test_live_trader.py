@@ -1,4 +1,4 @@
-"""live_trader.py 单元测试
+﻿"""live_trader.py 单元测试
 
 重点测试 _coerce_pct helper - 修复 '止损=0 显式禁用' 被 config 覆盖的 bug
 之前: rules.get('stop_loss') or sys_config.get(...) - 0 被当 falsy 跳掉
@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.common.services import live_trader
+from backend.services import live_trader
 
 
 class CoercePctTest(unittest.TestCase):

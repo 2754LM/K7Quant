@@ -301,7 +301,7 @@ def on_bar(state):
 - **前端**: Vue 3 + Vite + ECharts + **Naive UI** + Axios
 - **数据**: Binance Spot API (无需 Key)
 - **计算**: pandas + numpy + matplotlib
-- **存储**: SQLite (`data/k7quant.db`) + 完整 ORM 模型 (`backend/common/models.py`)
+- **存储**: SQLite (`data/k7quant.db`) + 完整 ORM 模型 (`backend/repositories/models.py`)
 - **配置**: 根目录 `config.yaml` (UI 可编辑) + `pyproject.toml` (Python 依赖)
 - **编辑器**: Monaco (策略代码) + 表达式编辑器双模式
 
@@ -329,8 +329,8 @@ cd frontend && npm run dev
 
 - **加策略**: `backend/core/strategy/__init__.py` 的 `BUILTIN_STRATEGIES` 加一条, 重启自动写入 DB
 - **加因子**: `backend/core/factor/__init__.py` 写 `f_xxx(df, **p)` + 在 `_FACTORS` 注册
-- **加表/字段**: `backend/common/models.py` 加 ORM 类, 重启自动 `create_all` (SQLAlchemy 自动迁移)
-- **加 API**: `backend/api/xxx_api.py` 加 endpoint + `app.py` `include_router`
+- **加表/字段**: `backend/repositories/models.py` 加 ORM 类, 重启自动 `create_all` (SQLAlchemy 自动迁移)
+- **加 API**: `backend/controllers/xxx_api.py` 加 endpoint + `app.py` `include_router`
 - **加页面**: `frontend/src/views/xxx.vue` + `App.vue` 的 `TABS` 注册
 
 ## ⚠️ 免责声明

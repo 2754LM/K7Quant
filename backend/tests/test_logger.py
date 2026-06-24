@@ -1,4 +1,4 @@
-"""logger.py 单元测试
+﻿"""logger.py 单元测试
 
 重点: 验证 propagate=False - 修复每条 log 被双写的 bug
 之前: k7quant logger 默认 propagate=True, 被 root logger 又写一次
@@ -18,9 +18,9 @@ class LoggerNoDuplicateTest(unittest.TestCase):
 
     def setUp(self):
         # 重新 import 触发 setup_logger
-        if "backend.core.logger" in sys.modules:
-            del sys.modules["backend.core.logger"]
-        from backend.core.logger import log
+        if "backend.core.logging" in sys.modules:
+            del sys.modules["backend.core.logging"]
+        from backend.core.logging import log
         self.log = log
 
     def test_propagate_disabled(self):

@@ -1,4 +1,4 @@
-"""Python 策略沙箱 - 自用宽松版
+﻿"""Python 策略沙箱 - 自用宽松版
 
 策略代码结构:
   def init() -> dict:        # 可选, 返回初始 state
@@ -174,7 +174,7 @@ class _Context:
                 full_dates = pd.to_datetime(full["date"], errors="coerce")
                 sliced = full[full_dates <= current_ts]
         except Exception as e:
-            from backend.core.logger import log
+            from backend.core.logging import log
             log.warning(f"[ctx.klines] 切片 {timeframe} 失败: {e}")
             return full
         if n is not None and n > 0 and len(sliced) > n:
@@ -215,13 +215,13 @@ class _Context:
         try:
             return compute_factor(df, factor_id, kwargs)
         except Exception as e:
-            from backend.core.logger import log
+            from backend.core.logging import log
             log.warning(f"[ctx.factor] {factor_id} on {timeframe} 失败: {e}")
             return pd.Series(dtype=float)
 
     def _load_timeframe(self, timeframe: str):
         """从 cache / fetcher 拉取主图区间的额外 timeframe K 线"""
-        from backend.common.data.access import get_kline
+        from backend.repositories.binance_data import get_kline
         # 用主图 df 的时间范围 + 一些 lookback buffer
         if len(self._df_full) == 0:
             self._tf_cache[timeframe] = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
@@ -231,7 +231,7 @@ class _Context:
         try:
             tdf = get_kline(self._symbol, timeframe, start, end)
         except Exception as e:
-            from backend.core.logger import log
+            from backend.core.logging import log
             log.warning(f"[sandbox] 加载 {self._symbol} {timeframe} 失败: {e}")
             tdf = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
         if tdf.empty:
@@ -392,7 +392,7 @@ class PythonStrategy:
             primary_timeframe: 主图时间框架
             ctx_data: 预加载的多 timeframe 数据 {tf: df} (回测入口已下载, 避免 ctx.klines 重复 IO)
         """
-        from backend.core import config as sys_config
+        from backend.config import config as sys_config
         cr = commission_rate if commission_rate is not None else float(sys_config.get("backtest.commission_rate", 0.0004))
         sl = slippage if slippage is not None else float(sys_config.get("backtest.slippage", 0.0005))
 
@@ -416,7 +416,7 @@ class PythonStrategy:
         trades = []
         actions = []
 
-        from backend.core.logger import log
+        from backend.core.logging import log
         for i in range(len(df)):
             ctx._bar = i
             ctx._factor_cache.clear()

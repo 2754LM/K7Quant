@@ -1,4 +1,4 @@
-"""Python 沙箱基础测试
+﻿"""Python 沙箱基础测试
 
 - AST 白名单: import/async/dunder/open/exec/eval 必须拒绝
 - init/on_bar 模式正常工作

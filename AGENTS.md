@@ -22,8 +22,29 @@
 ```
 D:\Desktop\lh\
 ├── backend/                  # Python 后端 (FastAPI + SQLAlchemy ORM)
-│   ├── app.py                # 入口: lifespan + 路由注册 + 静态前端
-│   ├── api/                  # 🌐 路由层 (薄编排, 只做 req/res 适配)
+│   ├── app.py                # 入口: lifespan + 路由注册 + 异常 handler 注册
+│   ├── config/               # ⚙️ 配置中心 (一个地方)
+│   │   ├── __init__.py       # re-exports (方便 from backend.config import X)
+│   │   ├── settings.py       # YAML 配置 (load_config / get / put / DEFAULTS)
+│   │   ├── paths.py          # 路径常量 (ROOT, DATA_DIR, LOGS_DIR, DB_PATH, CONFIG_PATH)
+│   │   ├── secrets.py        # 凭证加载 (Binance Demo API key/secret)
+│   │   └── constants.py      # 业务常量 (BINANCE_TIMEFRAMES, DEFAULT_SYMBOLS, ...)
+│   ├── exceptions/           # ⚠️ 异常处理 (一个目录)
+│   │   ├── __init__.py
+│   │   ├── domain.py         # 业务异常类 (StrategyCompileError / BacktestError / ...)
+│   │   ├── handlers.py       # FastAPI exception_handler (注册到 app)
+│   │   └── schemas.py        # 错误响应模型 (ErrorResponse)
+│   ├── core/                 # 🧮 纯计算核心 (无 I/O, 可单测)
+│   │   ├── __init__.py
+│   │   ├── helpers.py        # df_dates, to_records, sanitize, safe, fmt
+│   │   ├── logging.py        # 日志初始化 (单例 log)
+│   │   ├── backtest/         # Backtester + compute_metrics + plot_equity
+│   │   ├── factor/           # 33+ 因子 (MA/EMA/RSI/MACD/...)
+│   │   └── strategy/         # 9 个内置策略 + DSL 引擎 + Python 沙箱
+│   │       ├── __init__.py   # DSL 引擎 (StrategyEngine) + BUILTIN_STRATEGIES
+│   │       ├── sandbox.py    # 🐍 Python 沙箱 (PythonStrategy + _Context)
+│   │       └── context.py    # 🕐 多 timeframe 上下文 (build_ctx_series)
+│   ├── controllers/          # 🌐 HTTP 控制器 (薄编排, req/res 适配)
 │   │   ├── __init__.py
 │   │   ├── backtest_api.py
 │   │   ├── config_api.py
@@ -33,37 +54,25 @@ D:\Desktop\lh\
 │   │   ├── strategy_api.py
 │   │   ├── symbol_api.py
 │   │   ├── trade_api.py
-│   │   └── verify_api.py     # ✅ 验证测试模块 (独立小数据回测)
-│   ├── core/                 # 🧮 纯计算核心 (无 I/O, 无副作用, 可单测)
-│   │   ├── __init__.py       # 路径常量 + DB engine 初始化
-│   │   ├── config.py         # YAML 配置加载/保存
-│   │   ├── logger.py
-│   │   ├── secrets.py
-│   │   ├── backtest/         # Backtester + compute_metrics + plot_equity
-│   │   ├── factor/           # 33+ 因子 (MA/EMA/RSI/MACD/...)
-│   │   └── strategy/         # 9 个内置策略 + DSL 引擎 + Python 沙箱
-│   │       ├── __init__.py   # DSL 引擎 (StrategyEngine) + BUILTIN_STRATEGIES
-│   │       ├── sandbox.py    # 🐍 Python 沙箱 (PythonStrategy + _Context)
-│   │       └── context.py    # 🕐 多 timeframe 上下文 (build_ctx_series)
-│   └── common/               # 🔧 通用基础设施 (I/O + 业务编排)
+│   │   └── verify_api.py     # ✅ 验证测试模块
+│   ├── services/             # 💼 业务逻辑 (调 core + repositories)
+│   │   ├── __init__.py
+│   │   ├── backtest_service.py
+│   │   ├── config_service.py
+│   │   ├── data_service.py
+│   │   ├── factor_service.py
+│   │   ├── strategy_service.py
+│   │   ├── symbol_service.py
+│   │   ├── trade_service.py
+│   │   └── live_trader.py
+│   └── repositories/          # 🗄️ 数据访问 (DB + Binance + 缓存)
 │       ├── __init__.py
-│       ├── models.py         # 🗄️ SQLAlchemy 2.0 ORM 模型 (Symbol/Strategy/Factor/...)
-│       ├── helpers.py        # df_dates, to_records, sanitize, safe, fmt
-│       ├── storage/          # DB CRUD 兼容层 (旧 crud.xxx 转发到 models)
-│       ├── data/             # 数据下载/缓存/访问 (Binance fetcher + cache + demo)
-│       │   ├── fetcher.py
-│       │   ├── cache.py
-│       │   ├── access.py
-│       │   └── demo_client.py
-│       └── services/         # 业务编排层 (调 core 计算 + DB CRUD)
-│           ├── backtest_service.py
-│           ├── config_service.py
-│           ├── data_service.py
-│           ├── factor_service.py
-│           ├── live_trader.py
-│           ├── strategy_service.py
-│           ├── symbol_service.py
-│           └── trade_service.py
+│       ├── models.py         # SQLAlchemy 2.0 ORM (Symbol/Strategy/Factor/...)
+│       ├── crud.py           # DB CRUD 兼容层 (旧 crud.xxx 转发到 models)
+│       ├── binance_fetcher.py # Binance 公开 REST API
+│       ├── binance_cache.py   # 本地 Parquet 缓存
+│       ├── binance_data.py    # 统一访问 (get_kline / get_many)
+│       └── demo_client.py     # Binance Demo 账户
 ├── frontend/                 # Vue3 前端
 │   └── src/
 │       ├── api/index.js      # axios + 系统日志自动记录
@@ -103,11 +112,14 @@ D:\Desktop\lh\
 | 改多 timeframe 上下文 | `backend/core/strategy/context.py` (`build_ctx_series` / `_compute_ctx_for_tf`); 注入 ctx_<tf>_<col>_<stat><n> |
 | 加因子 | `backend/core/factor/__init__.py` 写 `f_xxx(df, **p)` + 在 `_FACTORS` 列表注册 |
 | 改回测逻辑 | `backend/core/backtest/__init__.py` (`Backtester.run` / `compute_metrics`) |
-| 改配置项 | `config.yaml` + `backend/core/config.py` 的 `DEFAULTS` + 前端 `Settings.vue` |
-| 加币种元信息 | `backend/common/services/symbol_service.py` 的 `DEFAULT_SYMBOLS` 或 `/api/symbol/upsert` |
-| 改 API 路由 | `backend/api/*_api.py` + `backend/app.py` `include_router` |
-| 改业务逻辑 | `backend/common/services/*.py` (与 router 解耦) |
-| 改数据下载/缓存 | `backend/common/data/fetcher.py` / `cache.py` / `access.py` |
+| 改配置项 | `config.yaml` + `backend/config/settings.py` 的 `DEFAULTS` + 前端 `Settings.vue` |
+| 改业务常量 (Binance 周期/默认币种) | `backend/config/constants.py` |
+| 改路径/日志 | `backend/config/paths.py` / `backend/core/logging.py` |
+| 改异常处理 | `backend/exceptions/domain.py` (新异常类) + `handlers.py` (FastAPI handler) |
+| 加币种元信息 | `backend/services/symbol_service.py` 的 `DEFAULT_SYMBOLS` (从 `config.constants` 导入) 或 `/api/symbol/upsert` |
+| 改 API 路由 | `backend/controllers/*_api.py` + `backend/app.py` `include_router` |
+| 改业务逻辑 | `backend/services/*.py` (与 controller 解耦) |
+| 改数据下载/缓存 | `backend/repositories/binance_fetcher.py` / `binance_cache.py` / `binance_data.py` |
 | 改前端页面 | `frontend/src/views/` + `App.vue` 的 `TABS` 注册 |
 | 改前端样式 | `frontend/src/style.css` (含 `[data-theme="light"]`) + 各 `.vue` 的 `<style scoped>` |
 | 改顶层 Tab | `frontend/src/App.vue` 的 `TABS` 数组 |
@@ -115,7 +127,7 @@ D:\Desktop\lh\
 | 改顶部状态/日志 | `frontend/src/App.vue` + `frontend/src/components/SystemLogPanel.vue` |
 | 改因子输入控件 | `frontend/src/components/RuleBuilder.vue` |
 | 改日期/时间选择 | `frontend/src/components/DateRangePicker.vue` / `TimeframePicker.vue` |
-| 验证测试模块 (小数据逐步回显) | 后端 `backend/api/verify_api.py` + 前端 `frontend/src/views/Verify.vue` |
+| 验证测试模块 (小数据逐步回显) | 后端 `backend/controllers/verify_api.py` + 前端 `frontend/src/views/Verify.vue` |
 
 ## API 一览
 
@@ -249,7 +261,7 @@ Python 沙箱额外提供:
 - `_FACTORS` 元素: `(id, name_zh, name_en, category, formula, description, params_schema)`
 - **自定义因子**: `is_custom=True` + `dsl_code` 字段, 通过 DSL 引擎编译, 重启自动加载
 
-### 模拟盘实盘运行 (`backend/common/services/live_trader.py`)
+### 模拟盘实盘运行 (`backend/services/live_trader.py`)
 
 单线程后台 runner, 加载策略后:
 - **DSL**: 拉主图 + ctx_data → `StrategyEngine.compile` → 每 bar 评估 signal
@@ -292,14 +304,14 @@ Python 沙箱额外提供:
 
 ## 添加新策略
 
-在 `backend/core/strategy/__init__.py` 的 `BUILTIN_STRATEGIES` 数组加一条，然后重启后端，会自动写入 DB (见 `common.services.strategy_service.init_builtin_strategies()`)。
+在 `backend/core/strategy/__init__.py` 的 `BUILTIN_STRATEGIES` 数组加一条，然后重启后端，会自动写入 DB (见 `services.strategy_service.init_builtin_strategies()`)。
 
 - **DSL 策略**: `"code": "signal = ...\n止损 = 0.05\n止盈 = 0.10\n仓位 = 1.0"`
 - **Python 策略**: `"code_type": "python"`, `"code": "def init()...\\ndef on_bar(state)..."`
 
 ## 添加新 ORM 表 / 字段 (SQLAlchemy 2.0)
 
-1. 在 `backend/common/models.py` 加新的 declarative class:
+1. 在 `backend/repositories/models.py` 加新的 declarative class:
 ```python
 class NewEntity(Base):
     __tablename__ = "new_entity"
@@ -308,21 +320,21 @@ class NewEntity(Base):
     # ... 其他字段
     def to_dict(self) -> dict: ...   # 序列化用
 ```
-2. 在 `common/models.py` 加便捷函数 `list_xxx()`, `get_xxx()`, `create_xxx()`, etc.
+2. 在 `repositories/models.py` 加便捷函数 `list_xxx()`, `get_xxx()`, `create_xxx()`, etc.
 3. 重启后端 → `Base.metadata.create_all()` 自动建表
-4. 在 `backend/common/services/` 加业务函数, 在 `backend/api/` 加 endpoint
+4. 在 `backend/services/` 加业务函数, 在 `backend/controllers/` 加 endpoint
 
 ## 添加新 API 端点
 
-1. 在对应 `backend/api/xxx_api.py` 加 endpoint（业务逻辑放 `services/`，router 只编排）：
-2. 新域则新建 `backend/api/my_api.py`，在 `backend/api/__init__.py` 导出，再到 `backend/app.py` 挂载
+1. 在对应 `backend/controllers/xxx_api.py` 加 endpoint（业务逻辑放 `services/`，router 只编排）：
+2. 新域则新建 `backend/controllers/my_api.py`，在 `backend/controllers/__init__.py` 导出，再到 `backend/app.py` 挂载
 3. 前端在 `frontend/src/api/index.js` 加 export
 4. 视图中 import 并调用
 
 ## 修改配置项
 
-1. `backend/core/config.py` 的 `DEFAULTS` 加字段
-2. `backend/api/config_api.py` 对应 Request 模型加字段
+1. `backend/config/settings.py` 的 `DEFAULTS` 加字段
+2. `backend/controllers/config_api.py` 对应 Request 模型加字段
 3. 前端 `Settings.vue` 加表单 (用 `n-input-number`/`n-select`) + 保存调用
 4. 启动时已在 `init_builtin_strategies()` 等处自动初始化
 
@@ -367,8 +379,8 @@ python -c "from backend.common.models import list_symbols, list_strategies; prin
 ## 常见陷阱
 
 1. **配置文件是根目录 `config.yaml`**（不是 `config/settings.yaml`）。
-2. **DB 是 SQLite + SQLAlchemy** `data/k7quant.db`；模型在 `backend/common/models.py`，加表只需加一个类，重启自动 `create_all`。
-3. **`data/`、`*.db`、`frontend/dist/`、`logs/` 都被 .gitignore**；`backend/common/data/` 是源码包（数据下载/缓存/访问），不要误删。
+2. **DB 是 SQLite + SQLAlchemy** `data/k7quant.db`；模型在 `backend/repositories/models.py`，加表只需加一个类，重启自动 `create_all`。
+3. **`data/`、`*.db`、`frontend/dist/`、`logs/` 都被 .gitignore**；`backend/repositories/` 是数据访问层（含 Binance fetcher/cache/demo_client），不要误删。
 4. **CORS 只放行本机来源**；不要为了图方便改回 `allow_origins=["*"]`（曾导致安全问题）。
 5. **DSL 不要用 eval**；扩展语法请改 `StrategyEngine`（AST 白名单），保持安全。
 6. **YAML/文件读写统一 `encoding="utf-8"`**；Binance fetcher 自带限速，不要去掉。

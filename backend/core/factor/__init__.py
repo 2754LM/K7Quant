@@ -1,4 +1,4 @@
-"""因子库: 30+ 预置技术/成交量因子"""
+﻿"""因子库: 30+ 预置技术/成交量因子"""
 import numpy as np
 import pandas as pd
 
