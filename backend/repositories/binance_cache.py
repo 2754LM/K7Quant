@@ -1,4 +1,5 @@
 ﻿"""本地缓存: 按 timeframes/{symbol}.csv 存储"""
+import re
 import pandas as pd
 from pathlib import Path
 from typing import Optional
@@ -6,11 +7,26 @@ from typing import Optional
 from backend.config.paths import CACHE_DIR
 
 
+# 严格白名单: 防止 path traversal
+_SAFE_TIMEFRAME = re.compile(r"^[a-z0-9]{1,10}$")   # e.g. 1m, 4h, 1d
+_SAFE_SYMBOL = re.compile(r"^[A-Z0-9]{2,20}$")       # e.g. BTCUSDT, ETHUSDT
+
+
+def _validate_id(value: str, kind: str, pattern: re.Pattern) -> str:
+    """校验 id 字符串不含 / \\ .. 等危险字符, 防止 path traversal"""
+    if not isinstance(value, str) or not pattern.match(value):
+        raise ValueError(f"非法的 {kind}: {value!r} (必须匹配 {pattern.pattern})")
+    return value
+
+
 class DataCache:
     def __init__(self, root: Path = None):
-        self.root = root or CACHE_DIR
+        self.root = (root or CACHE_DIR).resolve()
 
     def path(self, symbol: str, timeframe: str) -> Path:
+        # 安全: 校验 id 不含路径分隔符 / ..
+        _validate_id(symbol, "symbol", _SAFE_SYMBOL)
+        _validate_id(timeframe, "timeframe", _SAFE_TIMEFRAME)
         d = self.root / timeframe
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{symbol}.csv"
@@ -21,6 +37,13 @@ class DataCache:
     def read(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
         p = self.path(symbol, timeframe)
         if not p.exists():
+            return None
+        # 防御性: 解析后必须仍在 self.root 之内
+        try:
+            p_resolved = p.resolve()
+            if not p_resolved.is_relative_to(self.root):
+                return None
+        except Exception:
             return None
         try:
             return pd.read_csv(p, parse_dates=["date"])
@@ -34,13 +57,14 @@ class DataCache:
 
     def list(self, timeframe: str = None) -> dict:
         if timeframe:
+            _validate_id(timeframe, "timeframe", _SAFE_TIMEFRAME)
             d = self.root / timeframe
             if not d.exists():
                 return {}
             return {f.stem: f for f in d.glob("*.csv")}
         out = {}
         for tf_dir in self.root.iterdir():
-            if tf_dir.is_dir():
+            if tf_dir.is_dir() and _SAFE_TIMEFRAME.match(tf_dir.name):
                 out[tf_dir.name] = {f.stem: f for f in tf_dir.glob("*.csv")}
         return out
 
@@ -50,13 +74,14 @@ class DataCache:
             if p.exists():
                 p.unlink()
         elif timeframe:
+            _validate_id(timeframe, "timeframe", _SAFE_TIMEFRAME)
             d = self.root / timeframe
             if d.exists():
                 for f in d.glob("*.csv"):
                     f.unlink()
         else:
             for tf_dir in self.root.iterdir():
-                if tf_dir.is_dir():
+                if tf_dir.is_dir() and _SAFE_TIMEFRAME.match(tf_dir.name):
                     for f in tf_dir.glob("*.csv"):
                         f.unlink()
 

@@ -46,32 +46,44 @@ _FORBIDDEN_NODES = (
     ast.YieldFrom,
 )
 
-_FORBIDDEN_ATTRS = {"__class__", "__bases__", "__subclasses__", "__globals__",
+# 拒绝所有 dunder 名称 (属性/方法/调用) — 防止通过 __class__/__subclasses__/__import__ 等逃逸
+_FORBIDDEN_NAMES = {"__import__", "__build_class__", "__loader__", "__spec__",
+                    "__class__", "__bases__", "__subclasses__", "__globals__",
                     "__code__", "__dict__", "__module__", "__qualname__",
                     "__mro__", "__init_subclass__", "__subclasshook__",
                     "__getattribute__", "__getattr__", "__setattr__",
                     "__delattr__", "__reduce__", "__reduce_ex__", "__sizeof__",
                     "__repr__", "__str__", "__hash__", "__call__", "__new__"}
 
+# 函数黑名单: 不在沙箱中暴露
 _FORBIDDEN_CALLS = {"open", "exec", "eval", "compile", "getattr", "setattr",
                     "delattr", "vars", "breakpoint", "input",
-                    "memoryview", "help", "dir", "globals", "locals", "type"}
-# 注: __import__ 留在 builtins 给 np/pandas 内部 lazy import 用, AST 校验禁止用户直接调用 __import__()
+                    "memoryview", "help", "dir", "globals", "locals", "type",
+                    # 显式拒绝 __import__ (虽然 dunder check 会兜底, 这里双保险)
+                    "__import__"}
 
 
 def _validate_ast(tree: ast.AST) -> None:
+    """白名单式 AST 校验: 拒绝任何 dunder 访问 + 黑名单调用 + 危险节点"""
     for node in ast.walk(tree):
+        # 1. 危险节点 (import, async, global 等)
         if isinstance(node, _FORBIDDEN_NODES):
             raise ValueError(f"禁止使用: {type(node).__name__}")
+        # 2. 属性访问: 拒绝所有 dunder (任意 .__xxx__ 形式)
         if isinstance(node, ast.Attribute):
-            if node.attr.startswith("__") and node.attr.endswith("__"):
-                if node.attr in _FORBIDDEN_ATTRS:
-                    raise ValueError(f"禁止访问 dunder 属性: {node.attr}")
+            if node.attr.startswith("__"):
+                raise ValueError(f"禁止访问 dunder 属性: {node.attr}")
+        # 3. 函数调用: 拒绝所有 dunder + 黑名单
         if isinstance(node, ast.Call):
             func = node.func
-            if isinstance(func, ast.Name) and func.id in _FORBIDDEN_CALLS:
-                raise ValueError(f"禁止调用: {func.id}()")
-            if isinstance(func, ast.Attribute) and func.attr.startswith("__"):
+            # 3a. 直接调用: dunder 名字 + 黑名单
+            if isinstance(func, ast.Name):
+                if func.id.startswith("__"):
+                    raise ValueError(f"禁止调用 dunder 函数: {func.id}()")
+                if func.id in _FORBIDDEN_CALLS:
+                    raise ValueError(f"禁止调用: {func.id}()")
+            # 3b. 方法调用: 拒绝所有 dunder 方法
+            elif isinstance(func, ast.Attribute) and func.attr.startswith("__"):
                 raise ValueError(f"禁止调用 dunder 方法: {func.attr}")
 
 
@@ -79,7 +91,8 @@ def _validate_ast(tree: ast.AST) -> None:
 
 def _safe_builtins():
     import builtins
-    return {k: v for k, v in vars(builtins).items() if k not in _FORBIDDEN_CALLS}
+    return {k: v for k, v in vars(builtins).items()
+            if k not in _FORBIDDEN_CALLS and not k.startswith("__")}
 
 
 def _build_globals(extra: dict) -> dict:
@@ -176,7 +189,9 @@ class _Context:
         except Exception as e:
             from backend.core.logging import log
             log.warning(f"[ctx.klines] 切片 {timeframe} 失败: {e}")
-            return full
+            # ⚠️ 不能返回 full (那会包含未来 bar, 引入 look-ahead bias)
+            # 返回空 DataFrame, 让策略明确知道上下文不可用
+            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
         if n is not None and n > 0 and len(sliced) > n:
             sliced = sliced.tail(n)
         return sliced

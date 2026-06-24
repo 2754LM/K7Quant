@@ -70,8 +70,9 @@ class Backtester:
             df.loc[df.index[0], "trade"] = 0
         # 实际仓位 = 信号 * 比例 * 杠杆
         df["actual_pos"] = df["position"] * df["target_size"] * leverage
-        # 收益
-        df["strategy_ret"] = df["actual_pos"] * df["ret"] - df["trade"] * (self.commission_rate + self.slippage)
+        # 收益: 收益按实际仓位缩放, 费用也按比例扣 (避免 position_size=0.1 时费用过高)
+        fee_rate = self.commission_rate + self.slippage
+        df["strategy_ret"] = df["actual_pos"] * df["ret"] - df["trade"] * df["actual_pos"] * fee_rate
         df["equity"] = self.initial_capital * (1 + df["strategy_ret"]).cumprod()
         return df
 

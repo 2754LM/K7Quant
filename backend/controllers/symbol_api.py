@@ -1,6 +1,7 @@
 ﻿"""币种 API"""
+import re
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import List
 
 from backend.repositories.crud import crud
@@ -9,8 +10,18 @@ from backend.repositories.crud import crud
 router = APIRouter()
 
 
+# 严格白名单: Binance USDT 交易对 (大写字母+数字, 2-20 字符)
+_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{2,20}$")
+
+
+def _validate_symbol(value: str) -> str:
+    if not _SYMBOL_PATTERN.match(value):
+        raise HTTPException(status_code=400, detail=f"非法 symbol: {value!r} (必须 ^[A-Z0-9]{{2,20}}$)")
+    return value
+
+
 class UpsertRequest(BaseModel):
-    symbol: str
+    symbol: str = Field(..., description="Binance USDT 交易对, 如 BTCUSDT")
     name_zh: str
     name_en: str = ""
     category: str = ""
@@ -19,9 +30,21 @@ class UpsertRequest(BaseModel):
     tags: List[str] = []
     is_active: int = 0
 
+    @field_validator("symbol")
+    @classmethod
+    def _check_symbol(cls, v: str) -> str:
+        return _validate_symbol(v)
+
 
 class ActiveSymbolsRequest(BaseModel):
     symbols: List[str]
+
+    @field_validator("symbols")
+    @classmethod
+    def _check_symbols(cls, v: List[str]) -> List[str]:
+        for s in v:
+            _validate_symbol(s)
+        return v
 
 
 @router.get("/list")

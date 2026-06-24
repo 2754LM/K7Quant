@@ -1,11 +1,30 @@
 ﻿"""数据 API"""
-from fastapi import APIRouter, Query
+import re
+from fastapi import APIRouter, HTTPException, Query
 
 from backend.services import data_service
 from backend.config.paths import LOGS_DIR
+from backend.config.constants import BINANCE_TIMEFRAMES_SET
 
 
 router = APIRouter()
+
+
+# 安全: 严格白名单
+_SAFE_TIMEFRAME_RE = re.compile(r"^[a-z0-9]{1,10}$")
+_SAFE_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}$")
+
+
+def _validate_tf(value: str) -> str:
+    if not value or not _SAFE_TIMEFRAME_RE.match(value) or value not in BINANCE_TIMEFRAMES_SET:
+        raise HTTPException(status_code=400, detail=f"非法 timeframe: {value!r}")
+    return value
+
+
+def _validate_symbol(value: str) -> str:
+    if not value or not _SAFE_SYMBOL_RE.match(value):
+        raise HTTPException(status_code=400, detail=f"非法 symbol: {value!r}")
+    return value
 
 
 @router.get("/cache")
@@ -15,6 +34,10 @@ def list_cache():
 
 @router.delete("/cache")
 def clear_cache(timeframe: str = Query(None), symbol: str = Query(None)):
+    if timeframe is not None:
+        _validate_tf(timeframe)
+    if symbol is not None:
+        _validate_symbol(symbol)
     return data_service.clear_cache(timeframe, symbol)
 
 
@@ -26,6 +49,7 @@ def exchange_symbols():
 @router.get("/exchange-info/{symbol}")
 def exchange_info(symbol: str):
     """单个币种的交易所元信息 (filters, permissions, 状态) - 用于币种详情页"""
+    _validate_symbol(symbol)
     from backend.repositories.binance_fetcher import get_fetcher
     return get_fetcher().get_symbol_info(symbol)
 
@@ -47,16 +71,7 @@ def test_connection():
 
 @router.get("/logs/tail")
 def tail_logs(lines: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)):
-    """读取后端日志最近 N 行 (供前端 SystemLogPanel 轮询)
-
-    Args:
-        lines: 返回行数 (1-500)
-        offset: 跳过末尾 offset 行 (用于增量拉取)
-
-    Returns:
-        {lines: ["..."], offset: int, mtime: float}
-        - mtime: 日志文件 mtime, 客户端可判断是否需要重读
-    """
+    """读取后端日志最近 N 行 (供前端 SystemLogPanel 轮询)"""
     import os
     log_path = LOGS_DIR / "app.log"
     if not log_path.exists():
@@ -66,7 +81,6 @@ def tail_logs(lines: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)
     except OSError:
         mtime = 0
     try:
-        # 按行读全部, 取最后 N+offset 行
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
     except Exception as e:
@@ -88,4 +102,6 @@ def tail_logs(lines: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0)
 @router.post("/fetch")
 def fetch(symbol: str, timeframe: str = "4h",
           start: str = "20240101", end: str = "20250601"):
+    _validate_symbol(symbol)
+    _validate_tf(timeframe)
     return data_service.fetch_one(symbol, timeframe, start, end)
