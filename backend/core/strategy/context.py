@@ -53,7 +53,7 @@ def build_ctx_series(
     start = str(main_df["date"].iloc[0])[:10].replace("-", "")
     end = str(main_df["date"].iloc[-1])[:10].replace("-", "")
 
-    from backend.data.access import get_kline
+    from backend.common.data.access import get_kline
     from backend.core.logger import log
 
     for tf in context_timeframes:

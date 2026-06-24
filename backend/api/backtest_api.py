@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 
-from backend.services import backtest_service
+from backend.common.services import backtest_service
 from backend.core.logger import log
 
 
@@ -164,5 +164,5 @@ def kline(symbol: str, timeframe: str = "4h", start: str = "20240101", end: str 
 
 @router.get("/runs")
 def list_runs(limit: int = 50):
-    from backend.storage import crud
+    from backend.common.storage import crud
     return crud.list_backtest_runs(limit)

@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
-from backend.factor import compute_factor, FACTOR_REGISTRY
+from backend.core.factor import compute_factor, FACTOR_REGISTRY
 
 
 def _const_number(node):
@@ -120,7 +120,7 @@ class StrategyEngine:
                     例如 {"ctx_15m_close": Series, "ctx_15m_ma20": Series, ...}
         ctx_extra_cols: 这些名字可作为列名引用, 在 AST 校验和 ev() 中识别
         """
-        from backend.factor import FACTOR_REGISTRY as FR
+        from backend.core.factor import FACTOR_REGISTRY as FR
         user_to_id = {f["name_zh"].lower(): fid for fid, f in FR.items()}
         user_to_id.update({f["name_zh"]: fid for fid, f in FR.items()})
 

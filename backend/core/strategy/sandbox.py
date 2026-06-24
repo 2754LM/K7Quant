@@ -34,7 +34,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 import pandas as pd
 
-from backend.factor import compute_factor, FACTOR_REGISTRY
+from backend.core.factor import compute_factor, FACTOR_REGISTRY
 
 
 # ============ AST 黑名单校验 ============
@@ -221,7 +221,7 @@ class _Context:
 
     def _load_timeframe(self, timeframe: str):
         """从 cache / fetcher 拉取主图区间的额外 timeframe K 线"""
-        from backend.data.access import get_kline
+        from backend.common.data.access import get_kline
         # 用主图 df 的时间范围 + 一些 lookback buffer
         if len(self._df_full) == 0:
             self._tf_cache[timeframe] = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])

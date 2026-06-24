@@ -10,8 +10,8 @@ from typing import Optional
 from backend.core import config as sys_config
 from backend.core import secrets
 from backend.core.logger import log
-from backend.data.demo_client import get_demo_client, DemoApiError
-from backend.storage import crud
+from backend.common.data.demo_client import get_demo_client, DemoApiError
+from backend.common.storage import crud
 
 # 平仓时作为计价货币 / 不卖出的资产
 _QUOTE_ASSETS = {"USDT"}
@@ -218,7 +218,7 @@ def reset_sandbox() -> dict:
     }
     # 若有策略实盘在跑, 先停掉, 否则它会和重置抢着下单 / 持仓状态错乱
     try:
-        from backend.services.live_trader import get_live_trader
+        from backend.common.services.live_trader import get_live_trader
         lt = get_live_trader()
         if lt.running:
             lt.stop()
@@ -310,15 +310,15 @@ def reset_sandbox() -> dict:
 
 # ---- 策略实盘运行 (委托到 LiveTrader 单例; 延迟导入避免循环依赖) ----
 def live_status() -> dict:
-    from backend.services.live_trader import get_live_trader
+    from backend.common.services.live_trader import get_live_trader
     return get_live_trader().status()
 
 
 def live_start(strategy_id: int, symbol: str, timeframe: str, params: dict = None) -> dict:
-    from backend.services.live_trader import get_live_trader
+    from backend.common.services.live_trader import get_live_trader
     return get_live_trader().start(strategy_id, symbol, timeframe, params or {})
 
 
 def live_stop(flatten: bool = False) -> dict:
-    from backend.services.live_trader import get_live_trader
+    from backend.common.services.live_trader import get_live_trader
     return get_live_trader().stop(flatten)

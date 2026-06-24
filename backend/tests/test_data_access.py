@@ -2,7 +2,7 @@ import unittest
 
 import pandas as pd
 
-from backend.data import access
+from backend.common.data import access
 
 
 def make_df(dates):

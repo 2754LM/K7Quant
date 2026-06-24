@@ -1,6 +1,6 @@
 """配置业务: 读写 settings + symbols + 策略"""
 from backend.core import config as sys_config
-from backend.storage import crud
+from backend.common.storage import crud
 
 
 def get_full_config() -> dict:

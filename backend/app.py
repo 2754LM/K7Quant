@@ -19,8 +19,8 @@ import time as _time
 from backend.core import ROOT, LOGS_DIR
 from backend.core.logger import log
 from backend.core.config import load_config
-from backend.storage import init_schema, crud  # noqa
-from backend.services import strategy_service, symbol_service, factor_service
+from backend.common.storage import init_schema, crud  # noqa
+from backend.common.services import strategy_service, symbol_service, factor_service
 from backend.api import (
     backtest_api, factor_api, strategy_api,
     data_api, symbol_api, config_api, trade_api, rule_api,
@@ -32,7 +32,7 @@ from backend.api import (
 def _run_migrations():
     """轻量迁移: 给已有表加新列 (SQLAlchemy create_all 不会 ALTER)"""
     from sqlalchemy import text
-    from backend.models import get_engine
+    from backend.common.models import get_engine
     with get_engine().begin() as conn:
         # factors 表: 新增 is_custom / dsl_code / created_at
         cols = {row[1] for row in conn.execute(text("PRAGMA table_info(factors)")).fetchall()}
@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
     yield
     log.info("K7Quant shutting down...")
     try:
-        from backend.services.live_trader import get_live_trader
+        from backend.common.services.live_trader import get_live_trader
         get_live_trader().stop()
     except Exception as e:
         log.warning(f"[shutdown] 停止实盘运行器失败: {e}")
@@ -171,7 +171,7 @@ app.include_router(verify_api.router)  # 自带 prefix="/api/verify"
 
 @app.get("/api/health")
 def health():
-    from backend.data.fetcher import get_fetcher
+    from backend.common.data.fetcher import get_fetcher
     info = get_fetcher().test_connectivity()
     return {
         "status": "ok" if info["reachable"] else "degraded",

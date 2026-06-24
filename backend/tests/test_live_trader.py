@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.services import live_trader
+from backend.common.services import live_trader
 
 
 class CoercePctTest(unittest.TestCase):

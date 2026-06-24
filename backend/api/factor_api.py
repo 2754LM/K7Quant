@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
-from backend.services import factor_service
+from backend.common.services import factor_service
 
 
 router = APIRouter()
@@ -66,7 +66,7 @@ def list_factors(category: str = None):
 @router.get("/dsl-docs")
 def dsl_docs():
     """DSL 文档 (复用 strategy 引擎的同一份, 因子和策略共用一套语法)"""
-    from backend.strategy import get_dsl_docs
+    from backend.core.strategy import get_dsl_docs
     return get_dsl_docs()
 
 

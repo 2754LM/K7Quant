@@ -14,7 +14,7 @@ def _binance_timeframes():
     按 Binance 官方顺序 (秒/分/时/日/周/月), 不是字母序
     """
     # 延后导入避免循环 (config.py 被 fetcher.py 反向引用)
-    from backend.data.fetcher import BINANCE_TIMEFRAMES
+    from backend.common.data.fetcher import BINANCE_TIMEFRAMES
     return list(BINANCE_TIMEFRAMES)
 
 

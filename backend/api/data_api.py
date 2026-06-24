@@ -1,7 +1,7 @@
 """数据 API"""
 from fastapi import APIRouter, Query
 
-from backend.services import data_service
+from backend.common.services import data_service
 from backend.core import LOGS_DIR
 
 
@@ -26,7 +26,7 @@ def exchange_symbols():
 @router.get("/exchange-info/{symbol}")
 def exchange_info(symbol: str):
     """单个币种的交易所元信息 (filters, permissions, 状态) - 用于币种详情页"""
-    from backend.data.fetcher import get_fetcher
+    from backend.common.data.fetcher import get_fetcher
     return get_fetcher().get_symbol_info(symbol)
 
 
@@ -35,7 +35,7 @@ def list_timeframes():
     """Binance 支持的 timeframe 白名单 (前端 UI 用)
     返回顺序按 Binance 官方文档 (秒/分/时/日/周/月), 不是字母序
     """
-    from backend.data.fetcher import BINANCE_TIMEFRAMES
+    from backend.common.data.fetcher import BINANCE_TIMEFRAMES
     return {"timeframes": list(BINANCE_TIMEFRAMES)}
 
 

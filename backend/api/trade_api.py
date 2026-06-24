@@ -3,7 +3,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
 
-from backend.services import trade_service
+from backend.common.services import trade_service
 
 
 router = APIRouter()

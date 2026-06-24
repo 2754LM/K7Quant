@@ -4,7 +4,7 @@ from typing import List
 import numpy as np
 import pandas as pd
 
-from backend.factor import (
+from backend.core.factor import (
     list_factors as _list_factors,
     compute_factor,
     factor_correlation,
@@ -13,14 +13,14 @@ from backend.factor import (
     unregister_custom_factor,
     CATEGORIES,
 )
-from backend.data.access import get_kline, get_many
-from backend.services.helpers import df_dates, to_records
+from backend.common.data.access import get_kline, get_many
+from backend.common.helpers import df_dates, to_records
 
 
 def load_custom_factors_from_db():
     """启动时从 DB 把用户自定义因子加载到 FACTOR_REGISTRY"""
     try:
-        from backend.models import list_factors as _db_list
+        from backend.common.models import list_factors as _db_list
         rows = _db_list()
         loaded = 0
         for r in rows:
@@ -46,8 +46,8 @@ def load_custom_factors_from_db():
 def create_custom_factor(data: dict) -> dict:
     """创建自定义因子: 先编译验证 DSL, 再入库 + 注册到运行时"""
     import json as _json
-    from backend.models import create_custom_factor as _db_create
-    from backend.strategy import StrategyEngine
+    from backend.common.models import create_custom_factor as _db_create
+    from backend.core.strategy import StrategyEngine
 
     factor_id = data["factor_id"]
     dsl_code = data["dsl_code"].strip()
@@ -58,7 +58,7 @@ def create_custom_factor(data: dict) -> dict:
 
     # 1. 编译验证 DSL (有数据时实跑, 无数据时只校验语法)
     try:
-        from backend.data.access import get_kline
+        from backend.common.data.access import get_kline
         _df = get_kline("BTCUSDT", "1d", "20240101", "20250101")
         if not _df.empty:
             StrategyEngine.compile(dsl_code, {}, mode="factor")
@@ -87,7 +87,7 @@ def create_custom_factor(data: dict) -> dict:
 
 def delete_custom_factor(factor_id: str):
     """删除自定义因子"""
-    from backend.models import delete_custom_factor as _db_del
+    from backend.common.models import delete_custom_factor as _db_del
     _db_del(factor_id)
     unregister_custom_factor(factor_id)
 
@@ -101,7 +101,7 @@ def list_factors(category: str = None) -> dict:
 
 
 def get_factor(factor_id: str) -> dict:
-    from backend.factor import FACTOR_REGISTRY
+    from backend.core.factor import FACTOR_REGISTRY
     info = FACTOR_REGISTRY.get(factor_id)
     if not info:
         return {"error": f"未知因子: {factor_id}"}

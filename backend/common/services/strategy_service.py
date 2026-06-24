@@ -1,14 +1,14 @@
 """策略业务: CRUD + 编译验证 + 模板生成"""
 from typing import List
 
-from backend.storage import crud
-from backend.strategy import (
+from backend.common.storage import crud
+from backend.core.strategy import (
     StrategyEngine,
     get_builtin_strategies,
     get_strategy_dsl_template,
     BUILTIN_STRATEGIES,
 )
-from backend.factor import list_factors as _list_factors
+from backend.core.factor import list_factors as _list_factors
 
 
 def _code_looks_like_python(code: str) -> bool:
@@ -94,7 +94,7 @@ def create_strategy(data: dict) -> dict:
     ctx_lookback = int(data.get("context_lookback") or 20)
     # 验证代码可编译
     if code_type == "python":
-        from backend.strategy.sandbox import validate_python_strategy
+        from backend.core.strategy.sandbox import validate_python_strategy
         r = validate_python_strategy(code)
         if not r["ok"]:
             return {"error": f"Python 策略校验失败: {r['error']}"}
@@ -122,7 +122,7 @@ def update_strategy(strategy_id: int, data: dict) -> dict:
     ctx_lookback = data.get("context_lookback")
     if code:
         if code_type == "python":
-            from backend.strategy.sandbox import validate_python_strategy
+            from backend.core.strategy.sandbox import validate_python_strategy
             r = validate_python_strategy(code)
             if not r["ok"]:
                 return {"error": f"Python 策略校验失败: {r['error']}"}
@@ -158,12 +158,12 @@ def validate_code(code: str, code_type: str = "dsl",
     (不会真的拉 K 线, 只为了让 validator 认识这些名字)
     """
     if code_type == "python":
-        from backend.strategy.sandbox import validate_python_strategy
+        from backend.core.strategy.sandbox import validate_python_strategy
         return validate_python_strategy(code)
     ctx_extra_cols = set()
     if context_timeframes:
-        from backend.strategy.context import _tf_name
-        from backend.strategy.context import _compute_ctx_for_tf  # noqa
+        from backend.core.strategy.context import _tf_name
+        from backend.core.strategy.context import _compute_ctx_for_tf  # noqa
         # 生成所有可能的 ctx_<tf>_<col>_<stat><n> 名字
         cols = ("close", "open", "high", "low", "volume")
         stats = ("ma", "max", "min", "std", "sum")
@@ -184,7 +184,7 @@ def validate_code(code: str, code_type: str = "dsl",
 
 def validate_python(code: str) -> dict:
     """Python 策略编译测试"""
-    from backend.strategy.sandbox import validate_python_strategy
+    from backend.core.strategy.sandbox import validate_python_strategy
     return validate_python_strategy(code)
 
 
@@ -207,5 +207,5 @@ def get_templates() -> dict:
 
 def get_dsl_docs() -> dict:
     """DSL 语法文档 (委托到 strategy 引擎统一维护)"""
-    from backend.strategy import get_dsl_docs as _engine_docs
+    from backend.core.strategy import get_dsl_docs as _engine_docs
     return _engine_docs()

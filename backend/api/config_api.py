@@ -45,7 +45,7 @@ class TradingConfigRequest(BaseModel):
 
 @router.get("")
 def get_full():
-    from backend.services.config_service import get_full_config
+    from backend.common.services.config_service import get_full_config
     return get_full_config()
 
 
@@ -101,5 +101,5 @@ def set_trading(req: TradingConfigRequest):
 
 @router.post("/test-connection")
 def test():
-    from backend.data.fetcher import get_fetcher
+    from backend.common.data.fetcher import get_fetcher
     return get_fetcher().test_connectivity()

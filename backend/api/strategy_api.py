@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
-from backend.services import strategy_service
+from backend.common.services import strategy_service
 
 
 router = APIRouter()

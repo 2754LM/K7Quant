@@ -2,7 +2,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from backend.storage import crud
+from backend.common.storage import crud
 
 
 router = APIRouter()

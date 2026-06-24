@@ -1,5 +1,5 @@
 """币种初始化 (启动时调用)"""
-from backend.storage import crud
+from backend.common.storage import crud
 
 
 # 25 个主流币种 (与 symbols.yaml 同步)

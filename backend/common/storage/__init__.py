@@ -1,10 +1,10 @@
-"""存储层: 兼容旧 import 路径, 实际逻辑在 backend.models
+"""存储层: 兼容旧 import 路径, 实际逻辑在 backend.common.models
 
-旧的 `from backend.storage import crud` / `from backend.storage.db import ...` 仍然能工作，
+旧的 `from backend.common.storage import crud` / `from backend.common.storage.db import ...` 仍然能工作，
 但所有实现都基于 SQLAlchemy ORM (在 backend/models.py)。
 """
-# 别名以兼容旧代码: from backend.storage import crud; crud.list_symbols() 仍然可用
-from backend.models import (
+# 别名以兼容旧代码: from backend.common.storage import crud; crud.list_symbols() 仍然可用
+from backend.common.models import (
     # 实体
     Base, Symbol, Strategy, Factor, CustomRule, BacktestRun, Trade,
     # 引擎与事务
@@ -31,7 +31,7 @@ def init_schema(*_args, **_kwargs):
 
 def reset_db():
     """兼容: 删除所有表重新建 (调试用)"""
-    from backend.models import Base
+    from backend.common.models import Base
     Base.metadata.drop_all(get_engine())
     Base.metadata.create_all(get_engine())
 
@@ -40,6 +40,6 @@ def reset_db():
 class _CrudModule:
     """兼容旧的 crud.xxx 调用, 实际指向 models 的同名函数"""
     def __getattr__(self, name):
-        import backend.models as m
+        import backend.common.models as m
         return getattr(m, name)
 crud = _CrudModule()

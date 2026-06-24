@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
 
-from backend.storage import crud
+from backend.common.storage import crud
 
 
 router = APIRouter()

@@ -2,8 +2,8 @@
 import os
 from typing import List
 
-from backend.data.cache import get_cache
-from backend.data.fetcher import get_fetcher
+from backend.common.data.cache import get_cache
+from backend.common.data.fetcher import get_fetcher
 from backend.core import config as sys_config
 
 
@@ -33,7 +33,7 @@ def test_connectivity() -> dict:
 
 def fetch_one(symbol: str, timeframe: str, start: str, end: str) -> dict:
     """手动触发下载"""
-    from backend.data.access import get_kline
+    from backend.common.data.access import get_kline
     df = get_kline(symbol, timeframe, start, end, use_cache=True)
     if df.empty:
         return {"error": f"无法下载 {symbol} {timeframe}"}

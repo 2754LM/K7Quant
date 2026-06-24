@@ -4,8 +4,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 
-from backend.data.fetcher import get_fetcher
-from backend.data.cache import get_cache
+from backend.common.data.fetcher import get_fetcher
+from backend.common.data.cache import get_cache
 from backend.core import config as sys_config
 from backend.core.logger import log
 

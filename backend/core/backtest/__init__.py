@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 from backend.core import config as sys_config
-from backend.data.fetcher import BINANCE_TIMEFRAMES
+from backend.common.data.fetcher import BINANCE_TIMEFRAMES
 
 
 # 不同 K 线年化系数 (从 Binance 白名单派生, 单一来源)

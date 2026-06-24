@@ -400,7 +400,7 @@ def compute_factor(df: pd.DataFrame, factor_id: str, params: dict = None):
     fn = info["function"]
     # 用户自定义因子: 通过 DSL 引擎编译成可调用
     if info.get("is_custom") and info.get("dsl_code"):
-        from backend.strategy import StrategyEngine
+        from backend.core.strategy import StrategyEngine
         signal_fn, _ = StrategyEngine.compile(info["dsl_code"], params or {}, mode="factor")
         return signal_fn(df)
     return fn(df, **(params or {}))

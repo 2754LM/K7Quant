@@ -19,9 +19,9 @@ import pandas as pd
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from backend.backtest import Backtester, compute_metrics
-from backend.strategy import StrategyEngine
-from backend.strategy.sandbox import PythonStrategy
+from backend.core.backtest import Backtester, compute_metrics
+from backend.core.strategy import StrategyEngine
+from backend.core.strategy.sandbox import PythonStrategy
 
 
 router = APIRouter(prefix="/api/verify", tags=["verify"])

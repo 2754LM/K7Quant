@@ -9,12 +9,12 @@ import pandas as pd
 from backend.core import EXPORT_DIR
 from backend.core import config as sys_config
 from backend.core.logger import log
-from backend.data.access import get_kline, get_many
-from backend.backtest import Backtester, compute_metrics, plot_equity
-from backend.strategy import StrategyEngine
-from backend.strategy.sandbox import PythonStrategy
-from backend.strategy.context import build_ctx_series
-from backend.services.helpers import df_dates, to_records, sanitize, safe, fmt
+from backend.common.data.access import get_kline, get_many
+from backend.core.backtest import Backtester, compute_metrics, plot_equity
+from backend.core.strategy import StrategyEngine
+from backend.core.strategy.sandbox import PythonStrategy
+from backend.core.strategy.context import build_ctx_series
+from backend.common.helpers import df_dates, to_records, sanitize, safe, fmt
 
 
 # 并行池大小: 数据读取是 IO bound + pandas 计算 CPU bound, 8 线程足够覆盖小池子
@@ -74,7 +74,7 @@ def get_kline_data(symbol: str, timeframe: str, start: str, end: str) -> dict:
 def backtest_single(symbol: str, strategy_id: int, params: dict,
                     timeframe: str = None, start: str = None, end: str = None) -> dict:
     """根据 strategy_id 从 DB 加载策略, 跑单标的"""
-    from backend.storage import crud
+    from backend.common.storage import crud
 
     timeframe = timeframe or sys_config.get("backtest.default_timeframe", "4h")
     start = start or sys_config.get("backtest.start_date", "20240101")
@@ -340,7 +340,7 @@ def scan_pool(strategy_id: int, symbols: list = None, weights: dict = None,
     weights: {symbol: weight}, None 或空 = 等权
     优化: 每币种只跑一次回测, ThreadPoolExecutor 并行
     """
-    from backend.storage import crud
+    from backend.common.storage import crud
     params = params or {}
     import time as _time
     t0 = _time.time()
@@ -466,7 +466,7 @@ def filter_symbols(params: dict) -> dict:
     strategy_ctx_tfs = []
     strategy_ctx_lookback = 20
     if strategy_id:
-        from backend.storage import crud
+        from backend.common.storage import crud
         strategy = crud.get_strategy(strategy_id)
         if not strategy:
             return {"error": f"策略 ID {strategy_id} 不存在"}
@@ -579,6 +579,6 @@ def _rebalance_bars(rules: dict) -> int:
 
 
 def _active_symbols():
-    from backend.storage import crud
+    from backend.common.storage import crud
     syms = [s["symbol"] for s in crud.list_symbols(active_only=True)]
     return syms or ["BTCUSDT", "ETHUSDT"]
