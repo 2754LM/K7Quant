@@ -82,6 +82,10 @@ export const getExchangeInfo = (symbol) => api.get(`/data/exchange-info/${symbol
 export const getTimeframes = () => api.get('/data/timeframes')
 export const tailLogs = (lines = 50, offset = 0) => api.get('/data/logs/tail', { params: { lines, offset } })
 
+// 验证测试模块: 小数据回测, 每根 bar 严格回显
+export const listVerifyDatasets = () => api.get('/verify/datasets')
+export const runVerify = (data) => api.post('/verify/run', data)
+
 export const getSystemConfig = () => api.get('/config')
 export const updateBacktestConfig = (data) => api.put('/config/backtest', data)
 export const updateDataSourceConfig = (data) => api.put('/config/data-source', data)

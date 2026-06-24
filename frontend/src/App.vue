@@ -18,6 +18,7 @@ const Settings = defineAsyncComponent(() => import('./views/Settings.vue'))
 const Trade = defineAsyncComponent(() => import('./views/Trade.vue'))
 const Learn = defineAsyncComponent(() => import('./views/Learn.vue'))
 const LogViewer = defineAsyncComponent(() => import('./views/LogViewer.vue'))
+const Verify = defineAsyncComponent(() => import('./views/Verify.vue'))
 
 const themeOverrides = {
   common: {
@@ -52,6 +53,7 @@ const TABS = [
   { id: 'trade', label: '📈 模拟/实盘', comp: Trade },
   { id: 'settings', label: '⚙️ 设置', comp: Settings, needsCfg: true, needsReload: true },
   { id: 'learn', label: '📚 课堂', comp: Learn, needsCfg: true },
+  { id: 'verify', label: '✅ 验证', comp: Verify, needsCfg: false },
   { id: 'logs', label: '📋 日志', comp: LogViewer, needsCfg: false },
 ]
 

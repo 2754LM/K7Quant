@@ -24,6 +24,7 @@ from backend.services import strategy_service, symbol_service, factor_service
 from backend.api import (
     backtest_api, factor_api, strategy_api,
     data_api, symbol_api, config_api, trade_api, rule_api,
+    verify_api,
 )
 
 
@@ -165,6 +166,7 @@ app.include_router(symbol_api.router, prefix="/api/symbol", tags=["币种"])
 app.include_router(config_api.router, prefix="/api/config", tags=["配置"])
 app.include_router(trade_api.router, prefix="/api/trade", tags=["交易"])
 app.include_router(rule_api.router, prefix="/api/rule", tags=["自定义规则"])
+app.include_router(verify_api.router)  # 自带 prefix="/api/verify"
 
 
 @app.get("/api/health")
