@@ -448,22 +448,25 @@ class LiveTrader:
             return
         free_usdt = self._free("USDT")
         cap = min(self.position_size, float(sys_config.get("trading.max_total_pct", 0.95) or 0.95))
+        slippage_bps = float(sys_config.get("backtest.slippage", 0.0005) or 0.0005) * 10000
+        fill_price_est = price * (1 + slippage_bps / 10000)
         spend = free_usdt * cap
         filt = client.symbol_filters(self.symbol)
-        qty = _floor_qty(spend / price, filt.get("market_step_str"))
+        qty = _floor_qty(spend / fill_price_est, filt.get("market_step_str"))
         min_notional = filt.get("min_notional") or 0
         min_qty = filt.get("min_qty") or 0
-        if qty <= 0 or (min_qty and qty < min_qty) or (min_notional and qty * price < min_notional):
+        if qty <= 0 or (min_qty and qty < min_qty) or (min_notional and qty * fill_price_est < min_notional):
             self._log(f"跳过买入: 可用 {free_usdt:.2f} USDT, 目标额 {spend:.2f} 低于最小名义额/数量")
             return
         res = client.place_order(self.symbol, "BUY", "MARKET", qty)
         executed = float(res.get("executedQty") or qty)
         quote = float(res.get("cummulativeQuoteQty") or 0)
-        fill = (quote / executed) if executed > 0 and quote > 0 else price
+        fill = (quote / executed) if executed > 0 and quote > 0 else fill_price_est
+        slip_actual = (fill - price) / price if price > 0 else 0
         self.position = "long"
         self.entry_price = fill
         self.qty = executed
-        self._audit("buy", fill, executed, 0, f"策略实盘买入 #{res.get('orderId')}")
+        self._audit("buy", fill, executed, 0, f"策略实盘买入 #{res.get('orderId')} (滑点 {slip_actual*100:+.3f}%)")
         self.last_action = f"买入 {executed} @ {fill:.4f}"
         self._log(self.last_action)
 
@@ -472,6 +475,8 @@ class LiveTrader:
         base = _base_asset(self.symbol)
         free = self._free(base)
         filt = client.symbol_filters(self.symbol)
+        slippage_bps = float(sys_config.get("backtest.slippage", 0.0005) or 0.0005) * 10000
+        fill_price_est = (price or self._current_price()) * (1 - slippage_bps / 10000)
         qty = _floor_qty(free, filt.get("market_step_str"))
         if qty <= 0:
             self.position = "flat"
@@ -482,9 +487,10 @@ class LiveTrader:
         res = client.place_order(self.symbol, "SELL", "MARKET", qty)
         executed = float(res.get("executedQty") or qty)
         quote = float(res.get("cummulativeQuoteQty") or 0)
-        fill = (quote / executed) if executed > 0 and quote > 0 else (price or self._current_price())
+        fill = (quote / executed) if executed > 0 and quote > 0 else fill_price_est
+        slip_actual = (price - fill) / price if price > 0 else 0
         pnl = (fill - self.entry_price) * executed if self.entry_price > 0 else 0.0
-        self._audit("sell", fill, executed, pnl, f"策略实盘平仓 {reason} #{res.get('orderId')}")
+        self._audit("sell", fill, executed, pnl, f"策略实盘平仓 {reason} #{res.get('orderId')} (滑点 {slip_actual*100:+.3f}%)")
         self.position = "flat"
         self.entry_price = 0.0
         self.qty = 0.0
